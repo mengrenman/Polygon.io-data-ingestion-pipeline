@@ -16,3 +16,17 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 
 ## 📂 Example Directory Structure
 
+## 🚀 Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/mengren1942/polygonio-data-ingestion.git
+cd polygonio-data-ingestion
+
+# (Optional) Create environment
+conda create -n polygon-ingest python=3.11
+conda activate polygon-ingest
+pip install -r requirements.txt
+
+# Run the ingestion script
+python ingest.py --input-dir ./data --output-dir ./parquet
