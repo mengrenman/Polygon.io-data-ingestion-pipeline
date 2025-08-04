@@ -47,7 +47,7 @@ polygonio-data-ingestion/
 ├── README.md
 ├── requirements.txt
 └── setup.py                       # (Optional) to make this installable as a package
----
+```
 
 ## 🚀 Quick Start
 
