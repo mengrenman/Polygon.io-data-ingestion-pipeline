@@ -19,22 +19,22 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 ```text
 polygonio-data-ingestion/
 ├── data/
-│   ├── raw/                       # Original compressed CSVs from Polygon.io
+│   ├── raw/                             # Original compressed CSVs from Polygon.io
 │   │   ├── minute_aggs_v/
 │   │   ├── trades/ 
 │   │   └── quotes/
 │   │
-│   └── parquet_lake/              # Transformed Parquet output
+│   └── parquet_lake/                    # Transformed Parquet output
 │       ├── trades/
 │       └── quotes/
 │ 
 ├── config/
-│   └── config.yaml                # Source paths, schema, etc.
+│   └── config.yaml                      # Source paths, schema, etc.
 │ 
-├── scripts/                       # CLI or automation scripts
+├── scripts/                             # CLI or automation scripts
 │   └── polygon_ingest_monthslice.py
 │ 
-├── notebooks/                     # Optional notebooks for demos
+├── notebooks/                           # Optional notebooks for demos
 │   ├── get_tickers.ipynb
 │   └── get_tickers_from_data.ipynb
 │ 
