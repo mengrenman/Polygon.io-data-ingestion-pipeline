@@ -17,48 +17,35 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 ## 📂 Example Directory Structure
 
 polygonio-data-ingestion/
-├── data/                            # 🔽 Input & Output Data Folder
-│   ├── raw/                         # Original compressed CSVs from Polygon.io
+├── data/                          # Input & Output Data Folder
+│   ├── raw/                       # Original compressed CSVs from Polygon.io
 │   │   ├── trades/
-│   │   │   ├── 2023-06-01.csv.gz
-│   │   │   └── 2023-06-02.csv.gz
 │   │   └── quotes/
-│   │       ├── 2023-06-01.csv.gz
-│   │       └── 2023-06-02.csv.gz
-│   └── parquet/                     # Transformed Parquet output
+│   └── parquet/                   # Transformed Parquet output
 │       ├── trades/
-│       │   └── 2023/06/2023-06-01.parquet
 │       └── quotes/
-│           └── 2023/06/2023-06-01.parquet
-
-├── ingest/                          # 🛠 Core Ingestion Logic
+├── ingest/                        # Core ingestion logic
 │   ├── __init__.py
-│   ├── loader.py                    # Load raw files
-│   ├── parser.py                    # Parse and clean data
-│   ├── writer.py                    # Write to Parquet
-│   └── pipeline.py                  # End-to-end ingestion flow
-
-├── config/                          # ⚙ Config files
-│   └── config.yaml                  # Source paths, output paths, schema, etc.
-
-├── scripts/                         # 📜 CLI or helper scripts
-│   ├── run_ingestion.py             # Example entrypoint for ingestion
-│   └── cron_wrapper.sh              # (Optional) For scheduled execution
-
-├── notebooks/                       # 📓 Optional analysis or demo notebooks
+│   ├── loader.py                  # Load raw files
+│   ├── parser.py                  # Parse and clean data
+│   ├── writer.py                  # Write to Parquet
+│   └── pipeline.py                # End-to-end pipeline coordination
+├── config/
+│   └── config.yaml                # Source paths, schema, etc.
+├── scripts/                       # CLI or automation scripts
+│   ├── run_ingestion.py
+│   └── cron_wrapper.sh            # (Optional) for cron jobs
+├── notebooks/                     # Optional notebooks for demos
 │   └── visualize_sample.ipynb
-
-├── tests/                           # ✅ Unit tests
+├── tests/                         # Unit tests
 │   ├── test_loader.py
 │   ├── test_parser.py
 │   └── test_writer.py
-
-├── .gitignore                       # Ignore data, logs, etc.
+├── .gitignore
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
-└── setup.py                         # (Optional) To make package installable
-
+└── setup.py                       # (Optional) to make this installable as a package
 
 ## 🚀 Quick Start
 
