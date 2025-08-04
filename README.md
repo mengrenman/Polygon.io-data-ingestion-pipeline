@@ -29,4 +29,13 @@ conda activate polygon-ingest
 pip install -r requirements.txt
 
 # Run the ingestion script
-python ingest.py --input-dir ./data --output-dir ./parquet
+# Usage (Linux/macOS):
+# (optional) raise FD limit
+ulimit -n 16384
+
+python polygon_ingest_monthslice.py \
+  --src minute_aggs_v1 \
+  --out parquet_lake \
+  --workers 16 \
+  --chunk 5000000 \
+  --watch ticker_lists/nasdaq100.json
