@@ -25,28 +25,20 @@ polygonio-data-ingestion/
 │   └── parquet/                   # Transformed Parquet output
 │       ├── trades/
 │       └── quotes/
-├── ingest/                        # Core ingestion logic
-│   ├── __init__.py
-│   ├── loader.py                  # Load raw files
-│   ├── parser.py                  # Parse and clean data
-│   ├── writer.py                  # Write to Parquet
-│   └── pipeline.py                # End-to-end pipeline coordination
+│ 
 ├── config/
 │   └── config.yaml                # Source paths, schema, etc.
+│ 
 ├── scripts/                       # CLI or automation scripts
-│   ├── run_ingestion.py
-│   └── cron_wrapper.sh            # (Optional) for cron jobs
+│   └── polygon_ingest_monthslice.py
+│ 
 ├── notebooks/                     # Optional notebooks for demos
-│   └── visualize_sample.ipynb
-├── tests/                         # Unit tests
-│   ├── test_loader.py
-│   ├── test_parser.py
-│   └── test_writer.py
-├── .gitignore
+│   ├── get_tickers.ipynb
+│   └── get_tickers_from_data.ipynb
+│ 
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
-└── setup.py                       # (Optional) to make this installable as a package
 ```
 
 ## 🚀 Quick Start
