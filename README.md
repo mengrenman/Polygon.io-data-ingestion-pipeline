@@ -22,7 +22,8 @@ polygonio-data-ingestion/
 │   ├── raw/                       # Original compressed CSVs from Polygon.io
 │   │   ├── trades/
 │   │   └── quotes/
-│   └── parquet/                   # Transformed Parquet output
+│   │
+│   └── parquet_lake/                   # Transformed Parquet output
 │       ├── trades/
 │       └── quotes/
 │ 
