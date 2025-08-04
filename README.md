@@ -20,7 +20,8 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 polygonio-data-ingestion/
 ├── data/
 │   ├── raw/                       # Original compressed CSVs from Polygon.io
-│   │   ├── trades/
+│   │   ├── minute_aggs_v/
+│   │   ├── trades/ 
 │   │   └── quotes/
 │   │
 │   └── parquet_lake/                   # Transformed Parquet output
