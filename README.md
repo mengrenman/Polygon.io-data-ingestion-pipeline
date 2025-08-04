@@ -24,7 +24,7 @@ polygonio-data-ingestion/
 │   │   ├── trades/ 
 │   │   └── quotes/
 │   │
-│   └── parquet_lake/                   # Transformed Parquet output
+│   └── parquet_lake/              # Transformed Parquet output
 │       ├── trades/
 │       └── quotes/
 │ 
