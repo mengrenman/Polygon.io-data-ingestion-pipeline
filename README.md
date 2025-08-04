@@ -16,8 +16,9 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 
 ## 📂 Example Directory Structure
 
+```text
 polygonio-data-ingestion/
-├── data/                          # Input & Output Data Folder
+├── data/
 │   ├── raw/                       # Original compressed CSVs from Polygon.io
 │   │   ├── trades/
 │   │   └── quotes/
