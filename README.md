@@ -18,6 +18,7 @@ This repository contains a high-performance, modular pipeline for ingesting hist
 
 ```text
 polygonio-data-ingestion/
+│ 
 ├── data/
 │   ├── raw/                             # Original compressed CSVs from Polygon.io
 │   │   ├── minute_aggs_v/
