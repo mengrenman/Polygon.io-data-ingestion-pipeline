@@ -2,6 +2,8 @@
 
 A small, batteries-included pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull **refdata** (splits/dividends/security master), and build **adjusted** lakes (split-adjusted + total-return). Scripts are reproducible and notebook-friendly.
 
+<img src="figures/adjust.png" alt="OLS residuals" width="600">
+
 ---
 
 ## Features
