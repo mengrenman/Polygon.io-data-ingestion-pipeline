@@ -38,7 +38,7 @@ pip install -e .
 
 ## 📁 Directory Structure
 
-```
+~~~
 repo_polygonio/
 ├── README.md
 ├── data/
@@ -66,7 +66,7 @@ repo_polygonio/
 │       ├── factor_builder.py            # Core logic to create adjusted lakes
 │       ├── lake_io.py                   # Utilities to load parquet lakes
 │       └── refdata.py                   # Utilities to download and parse corporate actions
-```
+~~~
 
 ---
 
