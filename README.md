@@ -1,69 +1,35 @@
-# Polygon.io Data Ingestion Pipeline
+# Polygon.io Lake Builder
 
-Efficient ingestion pipeline for historical Polygon.io market data, including CSV parsing, Parquet conversion, and optional data lake storage.
+A small, batteries-included pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull **refdata** (splits/dividends/security master), and build **adjusted** lakes (split-adjusted + total-return). Scripts are reproducible and notebook-friendly.
 
-This repository contains a high-performance, modular pipeline for ingesting historical market data from [Polygon.io](https://polygon.io/). It is designed to process flat file dumps (e.g., `2023-06-05.csv.gz`), convert them into analysis-friendly formats like Parquet, and store them in a structured data lake.
+---
 
-## 📦 Features
+## Features
 
-- 🗃️ Batch ingestion of compressed CSV files
-- 🧱 Conversion to columnar Parquet format
-- 🧪 Schema enforcement and file validation
-- ⚡ Optional multi-threaded processing
-- 🪣 Compatible with local and cloud (S3) storage
-- 🧩 Modular design for extensibility (e.g., DuckDB, Snowflake, BigQuery)
-- 🧭 For use in quantitative research and trading systems
+- Reproducible **unadjusted** lakes (minute/day).
+- **Refdata** pullers (security master, splits, dividends).
+- **Adjusted** lakes (split-adjusted OHLC/VWAP/Volume + total-return).
+- Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles.
+- A schema-safe loader module for notebooks/QA plots.
 
-## 📂 Example Directory Structure
+> **Pipeline steps**
+>
+> 1) Download Polygon flat files  
+> 2) Download/build ticker lists  
+> 3) Build unadjusted Parquet lakes (**needs ticker lists**)  
+> 4) Pull refdata from Polygon (**needs ticker lists**)  
+> 5) Build adjusted Parquet lakes from unadjusted + refdata (**needs ticker lists**)
 
-```text
-polygonio-data-ingestion/
-│ 
-├── data/
-│   ├── raw/                             # Original compressed CSVs from Polygon.io
-│   │   ├── minute_aggs_v/
-│   │   ├── trades/ 
-│   │   └── quotes/
-│   │
-│   └── parquet_lake/                    # Transformed Parquet output
-│       ├── trades/
-│       └── quotes/
-│ 
-├── config/
-│   └── config.yaml                      # Source paths, schema, etc.
-│ 
-├── scripts/                             # CLI or automation scripts
-│   └── polygon_ingest_monthslice.py
-│ 
-├── notebooks/                           # Optional notebooks for demos
-│   ├── get_tickers.ipynb
-│   └── get_tickers_from_data.ipynb
-│ 
-├── LICENSE
-├── README.md
-├── requirements.txt
-```
+---
 
-## 🚀 Quick Start
+## Requirements
+
+- Python 3.10+ (tested on 3.12)
+- `pandas`, `pyarrow`, `tqdm`, `typer`, `polygon` (Polygon API client)
+
+Install in editable mode:
 
 ```bash
-# Clone the repository
-git clone https://github.com/mengren1942/polygonio-data-ingestion.git
-cd polygonio-data-ingestion
-
-# (Optional) Create environment
-conda create -n polygon-ingest python=3.11
-conda activate polygon-ingest
-pip install -r requirements.txt
-
-# Run the ingestion script
-# Usage (Linux/macOS):
-# (optional) raise FD limit
-ulimit -n 16384
-
-python polygon_ingest_monthslice.py \
-  --src minute_aggs_v1 \
-  --out parquet_lake \
-  --workers 16 \
-  --chunk 5000000 \
-  --watch ticker_lists/nasdaq100.json
+python -m venv .venv && source .venv/bin/activate
+pip install -U pip
+pip install -e .
