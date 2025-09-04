@@ -1,0 +1,14 @@
+LICENSE
+README.md
+pyproject.toml
+src/polygon_ingest/__init__.py
+src/polygon_ingest/cli.py
+src/polygon_ingest/corp_actions.py
+src/polygon_ingest/ingest.py
+src/polygon_pullers/__init__.py
+src/polygonio_ingestion.egg-info/PKG-INFO
+src/polygonio_ingestion.egg-info/SOURCES.txt
+src/polygonio_ingestion.egg-info/dependency_links.txt
+src/polygonio_ingestion.egg-info/entry_points.txt
+src/polygonio_ingestion.egg-info/requires.txt
+src/polygonio_ingestion.egg-info/top_level.txt

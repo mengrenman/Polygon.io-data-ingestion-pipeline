@@ -1,0 +1,39 @@
+import typer, os, sys, runpy
+from pathlib import Path
+from dotenv import load_dotenv
+
+app = typer.Typer(help="Polygon.io ingestion pipeline (thin wrappers over your current scripts).")
+load_dotenv()  # picks up .env if present
+
+REPO = Path(__file__).resolve().parents[2]  # repo root (…/src/ -> repo)
+
+def _run(script: str, argv: list[str]):
+    # Execute an existing top-level script in-process with argv
+    # so you don't have to refactor immediately.
+    script_path = REPO / script
+    if not script_path.exists():
+        raise FileNotFoundError(script_path)
+    old_argv = sys.argv[:]
+    try:
+        sys.argv = [str(script_path)] + argv
+        runpy.run_path(str(script_path), run_name="__main__")
+    finally:
+        sys.argv = old_argv
+
+@app.command()
+def minute(tickers: str, start: str, end: str):
+    """Call your polygon_ingest_minute.py with args."""
+    _run("polygon_ingest_minute.py", ["--tickers", tickers, "--start", start, "--end", end])
+
+@app.command()
+def day(tickers: str, start: str, end: str):
+    """Call your polygon_ingest_day.py with args."""
+    _run("polygon_ingest_day.py", ["--tickers", tickers, "--start", start, "--end", end])
+
+@app.command()
+def pull_actions(ticker: str):
+    """Call your polygon_pullers.py (assumed to support a single ticker)."""
+    _run("polygon_pullers.py", ["--ticker", ticker])
+
+if __name__ == "__main__":
+    app()

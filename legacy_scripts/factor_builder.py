@@ -1,0 +1,1170 @@
+#!/usr/bin/env python3
+# factor_builder.py
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+from pathlib import Path
+from typing import Optional, List, Iterable, Tuple, Dict, Any
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+
+
+# ===========================
+# Globals for batch workers
+# ===========================
+_SPLITS_TABLE: Optional[pd.DataFrame] = None
+_DIVS_TABLE: Optional[pd.DataFrame] = None
+
+def _init_worker(splits: Optional[pd.DataFrame], divs: Optional[pd.DataFrame]) -> None:
+    global _SPLITS_TABLE, _DIVS_TABLE
+    _SPLITS_TABLE = splits
+    _DIVS_TABLE = divs
+
+
+# =============================================================
+# IO helpers
+# =============================================================
+
+def _path_contains_any(parts: Iterable[str], candidates: set[str]) -> Optional[str]:
+    for p in parts:
+        if p in candidates:
+            return p
+    return None
+
+def _detect_ts_unit(maxv: float) -> str:
+    if maxv >= 1e17:  return "ns"
+    if maxv >= 1e14:  return "us"
+    if maxv >= 1e11:  return "ms"
+    return "s"
+
+def _read_prices(path: Path,
+                 tickers: Optional[List[str]] = None,
+                 start: Optional[str] = None,
+                 end: Optional[str] = None) -> pd.DataFrame:
+    """Read raw (unadjusted) prices; require columns: datetime, ticker, close, volume."""
+    def _normalize_one(df: pd.DataFrame, file_path: Path, tickset: set | None) -> pd.DataFrame:
+        df = df.copy()
+
+        # Ticker
+        if "ticker" not in df.columns:
+            ticker_from_path = None
+            if tickset:
+                ticker_from_path = _path_contains_any(file_path.parts, tickset)
+            if ticker_from_path is None and "T" in df.columns:
+                df = df.rename(columns={"T": "ticker"})
+            else:
+                if ticker_from_path is None:
+                    ticker_from_path = file_path.parent.name
+                df["ticker"] = ticker_from_path
+        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+
+        # Map Polygon shorthand
+        if "close" not in df.columns and "c" in df.columns:
+            df = df.rename(columns={"c": "close"})
+        if "volume" not in df.columns and "v" in df.columns:
+            df = df.rename(columns={"v": "volume"})
+
+        # Datetime
+        if "datetime" not in df.columns:
+            time_col = None
+            for cand in ("datetime", "date", "timestamp", "t", "time"):
+                if cand in df.columns:
+                    time_col = cand
+                    break
+            if time_col is None:
+                raise ValueError(f"{file_path}: no datetime/date/timestamp column")
+
+            s = pd.to_datetime(df[time_col], errors="coerce", utc=True)
+            if s.isna().all():
+                num = pd.to_numeric(df[time_col], errors="coerce")
+                if num.notna().any():
+                    unit = _detect_ts_unit(float(np.nanmax(num.values)))
+                    s = pd.to_datetime(num, unit=unit, errors="coerce", utc=True)
+            if s.isna().all():
+                raise ValueError(f"{file_path}: could not parse time column '{time_col}'")
+
+            df["datetime"] = s.dt.tz_convert(None)
+        else:
+            df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True).dt.tz_convert(None)
+
+        # Enforce base columns
+        needed = {"datetime", "ticker", "close", "volume"}
+        missing = needed - set(df.columns)
+        if missing:
+            raise ValueError(f"{file_path}: prices missing columns {missing}")
+
+        # Optional filters
+        if start:
+            df = df[df["datetime"] >= pd.to_datetime(start)]
+        if end:
+            df = df[df["datetime"] <= pd.to_datetime(end)]
+        if tickset:
+            df = df[df["ticker"].isin(tickset)]
+
+        return df[["datetime", "ticker", "close", "volume",
+                   *[c for c in ("open","high","low") if c in df.columns]]]
+
+    # Build file list
+    if path.is_file():
+        files = [path]
+    else:
+        files = sorted(path.rglob("*.parquet"))
+    if not files:
+        raise SystemExit(f"No parquet files found under {path}")
+
+    tickset = set(tickers) if tickers else None
+    if path.is_dir() and tickset:
+        files = [fp for fp in files if _path_contains_any(fp.parts, tickset)]
+        if not files:
+            raise SystemExit("No files matched the provided tickers under the directory (<LAKE>/<TICKER>/...)")
+
+    dfs = []
+    for f in tqdm(files, desc=f"Reading prices recursively from {path}"):
+        try:
+            raw = pd.read_parquet(f)
+            dfs.append(_normalize_one(raw, f, tickset))
+        except Exception as e:
+            print(f"[WARN] Skipping {f}: {e}")
+
+    if not dfs:
+        raise SystemExit("No readable price files after normalization")
+
+    out = pd.concat(dfs, ignore_index=True)
+    out["datetime"] = pd.to_datetime(out["datetime"]).dt.tz_localize(None)
+    out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+    return out
+
+
+# =============================================================
+# ID stitching & event-day key (batch)
+# =============================================================
+
+def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame) -> pd.DataFrame:
+    sm = security_master.copy()
+    sm["ticker"] = sm["ticker"].astype(str).str.strip().str.upper()
+    if "composite_figi" not in sm.columns:
+        sm["composite_figi"] = pd.NA
+
+    # NEW: provide defaults if these columns are missing
+    if "effective_start" not in sm.columns:
+        sm["effective_start"] = pd.NaT
+    if "effective_end" not in sm.columns:
+        sm["effective_end"] = pd.NaT
+        
+    sm["effective_start"] = pd.to_datetime(sm["effective_start"])
+    sm["effective_end"]   = pd.to_datetime(sm["effective_end"])
+
+    prx = prx.copy()
+    prx["ticker"] = prx["ticker"].astype(str).str.strip().str.upper()
+    prx["datetime"] = pd.to_datetime(prx["datetime"]).dt.tz_localize(None)
+    prx["event_day"] = prx["datetime"].dt.normalize()
+
+    m = prx.merge(
+        sm[["composite_figi", "ticker", "effective_start", "effective_end"]],
+        on="ticker", how="left"
+    )
+    inwin = (m["event_day"] >= m["effective_start"]) & (
+        m["effective_end"].isna() | (m["event_day"] <= m["effective_end"])
+    )
+    m = m[inwin | m["effective_start"].isna()]
+    m = (m.sort_values(["ticker", "datetime", "effective_start"])
+           .drop_duplicates(["ticker", "datetime"], keep="last"))
+
+    m["id"] = m["composite_figi"].fillna("NOFIGI__" + m["ticker"])
+    return m.drop(columns=["effective_start", "effective_end"])
+
+
+# =============================================================
+# Prep reference tables
+# =============================================================
+
+def _prep_splits(splits: pd.DataFrame) -> pd.DataFrame:
+    s = splits.copy()
+    if "execution_date" not in s.columns:
+        raise ValueError("splits is missing 'execution_date'")
+    if "ratio" not in s.columns and {"split_from", "split_to"} <= set(s.columns):
+        s["ratio"] = s["split_to"].astype(float) / s["split_from"].astype(float)
+    if "ratio" not in s.columns:
+        raise ValueError("splits missing 'ratio' (or split_from/split_to)")
+
+    s["execution_date"] = pd.to_datetime(s["execution_date"]).dt.normalize()
+    s["ratio"] = s["ratio"].astype(float)
+
+    if "ticker" not in s.columns and "T" in s.columns:
+        s = s.rename(columns={"T": "ticker"})
+    if "ticker" not in s.columns:
+        raise ValueError("splits is missing 'ticker'")
+    s["ticker"] = s["ticker"].astype(str).str.strip().str.upper()
+
+    if "composite_figi" not in s.columns:
+        s["composite_figi"] = pd.NA
+
+    s["event_id"] = np.where(s["composite_figi"].notna(), s["composite_figi"], "NOFIGI__" + s["ticker"])
+    return s[["execution_date", "ratio", "ticker", "composite_figi", "event_id"]]
+
+def _prep_dividends(dividends: pd.DataFrame) -> pd.DataFrame:
+    d = dividends.copy()
+    ex_col = "ex_date" if "ex_date" in d.columns else ("ex_dividend_date" if "ex_dividend_date" in d.columns else None)
+    amt_col = "amount" if "amount" in d.columns else ("cash_amount" if "cash_amount" in d.columns else None)
+    if ex_col is None or amt_col is None:
+        raise ValueError("dividends missing ex-date or amount")
+
+    d = d.rename(columns={ex_col: "ex_date", amt_col: "amount"})
+    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize()
+
+    if "ticker" not in d.columns and "T" in d.columns:
+        d = d.rename(columns={"T": "ticker"})
+    if "ticker" not in d.columns:
+        raise ValueError("dividends is missing 'ticker'")
+    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+
+    if "composite_figi" not in d.columns:
+        d["composite_figi"] = pd.NA
+
+    d["event_id"] = np.where(d["composite_figi"].notna(), d["composite_figi"], "NOFIGI__" + d["ticker"])
+    return d[["ex_date", "amount", "ticker", "composite_figi", "event_id"]]
+
+
+# =============================================================
+# Per-id workers (BATCH MODE)
+# =============================================================
+
+def _split_factors_for_id_worker(payload: Tuple[str, pd.DataFrame]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    gid, gpx = payload
+    s = _SPLITS_TABLE
+    if s is None:
+        raise RuntimeError("Worker missing splits table")
+
+    days = pd.DataFrame({"event_day": np.sort(gpx["event_day"].unique())})
+    tick = gpx["ticker"].iloc[0]
+
+    ev = s[s["event_id"] == gid][["execution_date", "ratio"]].dropna()
+    used_fallback = False
+    if ev.empty:
+        ev = s[s["ticker"] == tick][["execution_date", "ratio"]].dropna()
+        used_fallback = True
+    ev = ev.sort_values("execution_date")
+
+    if ev.empty:
+        out = days.copy()
+        out["split_price_factor"] = 1.0
+        out["split_volume_factor"] = 1.0
+        stats = {"ticker": tick, "events_aligned": 0, "cum_ratio": 1.0,
+                 "last_raw_date": pd.NaT, "last_aligned_day": pd.NaT, "fallback": used_fallback}
+    else:
+        aligned = pd.merge_asof(
+            ev.rename(columns={"execution_date": "event_anchor"}),
+            days.rename(columns={"event_day": "event_anchor"}),
+            on="event_anchor",
+            direction="forward",
+            allow_exact_matches=True
+        ).rename(columns={"event_anchor": "event_day"}).dropna(subset=["event_day"])
+
+        per_day = aligned.groupby("event_day", as_index=False)["ratio"].prod()
+        e = days.merge(per_day, on="event_day", how="left")
+        e["ratio"] = e["ratio"].fillna(1.0)
+        e["F"] = e["ratio"].cumprod()
+        F_last = float(e["F"].iloc[-1])
+        out = days.copy()
+        out["split_price_factor"]  = e["F"] / F_last
+        out["split_volume_factor"] = F_last / e["F"]
+
+        stats = {
+            "ticker": tick,
+            "events_aligned": int((per_day["ratio"].fillna(1.0) != 1.0).sum()),
+            "cum_ratio": float(per_day["ratio"].prod()) if len(per_day) else 1.0,
+            "last_raw_date": ev["execution_date"].max(),
+            "last_aligned_day": per_day["event_day"].max() if len(per_day) else pd.NaT,
+            "fallback": used_fallback,
+        }
+
+    out["id"] = gid
+    return out, stats
+
+
+def _dividend_factors_for_id_worker(payload: Tuple[str, pd.DataFrame, bool]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    gid, gpx, use_split_base = payload
+    d = _DIVS_TABLE
+    if d is None:
+        raise RuntimeError("Worker missing dividends table")
+
+    gpx = gpx.sort_values("datetime").copy()
+    base_series = gpx["close_split"] if use_split_base and "close_split" in gpx.columns else gpx["close"]
+    gpx["prior_base"] = base_series.shift(1)
+
+    cal = (gpx[["event_day", "prior_base"]]
+           .drop_duplicates("event_day")
+           .sort_values("event_day"))
+
+    tick = gpx["ticker"].iloc[0]
+
+    ev = d[d["event_id"] == gid][["ex_date", "amount"]].dropna()
+    used_fallback = False
+    if ev.empty:
+        ev = d[d["ticker"] == tick][["ex_date", "amount"]].dropna()
+        used_fallback = True
+    ev = ev.sort_values("ex_date")
+
+    if ev.empty:
+        T = cal[["event_day"]].copy()
+        T["tr_price_factor"] = 1.0
+        stats = {"ticker": tick, "event_days": 0, "total_cash": 0.0, "base": "split" if use_split_base else "raw",
+                 "last_raw_date": pd.NaT, "last_aligned_day": pd.NaT, "fallback": used_fallback}
+    else:
+        aligned = pd.merge_asof(
+            ev.rename(columns={"ex_date": "event_anchor"}),
+            cal.rename(columns={"event_day": "event_anchor"}),
+            on="event_anchor",
+            direction="forward",
+            allow_exact_matches=True
+        ).rename(columns={"event_anchor": "event_day"}).dropna(subset=["event_day"])
+
+        per_day_amt = aligned.groupby("event_day", as_index=False)["amount"].sum()
+        T = cal.merge(per_day_amt, on="event_day", how="left", validate="one_to_one")
+
+        T["g"] = 1.0
+        mask = T["amount"].notna() & T["prior_base"].notna() & (T["prior_base"] > 0)
+        T.loc[mask, "g"] = (T.loc[mask, "prior_base"] - T.loc[mask, "amount"]) / T.loc[mask, "prior_base"]
+        T["G"] = T["g"].cumprod()
+        G_last = float(T["G"].iloc[-1])
+        T["tr_price_factor"] = T["G"] / G_last
+
+        stats = {
+            "ticker": tick,
+            "event_days": int((per_day_amt["amount"] > 0).sum()),
+            "total_cash": float(per_day_amt["amount"].sum()),
+            "base": "split" if use_split_base else "raw",
+            "last_raw_date": ev["ex_date"].max(),
+            "last_aligned_day": per_day_amt["event_day"].max() if len(per_day_amt) else pd.NaT,
+            "fallback": used_fallback,
+        }
+
+    return T[["event_day", "tr_price_factor"]].assign(id=gid), stats
+
+
+# =============================================================
+# Batch builders (invoke workers)
+# =============================================================
+
+def _build_split_factors(px_df: pd.DataFrame,
+                         splits: pd.DataFrame,
+                         stats: dict,
+                         workers: int = 1) -> pd.DataFrame:
+    S = _prep_splits(splits)
+    out_parts = []
+    split_stats: Dict[str, Dict[str, Any]] = {}
+
+    groups = [(gid, g[["ticker","event_day"]].copy()) for gid, g in px_df.groupby("id")]
+    if workers <= 1:
+        for gid, g in tqdm(groups, desc="Split factors per id"):
+            _SPLITS_TABLE = S
+            res, st = _split_factors_for_id_worker((gid, g))
+            out_parts.append(res)
+            split_stats[gid] = st
+    else:
+        with ProcessPoolExecutor(max_workers=workers,
+                                 initializer=_init_worker,
+                                 initargs=(S, None)) as ex:
+            futs = {ex.submit(_split_factors_for_id_worker, (gid, g)): gid for gid, g in groups}
+            for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Split factors per id"):
+                gid = futs[fut]
+                res, st = fut.result()
+                out_parts.append(res)
+                split_stats[gid] = st
+
+    stats["splits"] = split_stats
+    return pd.concat(out_parts, ignore_index=True)
+
+def _build_dividend_factors(px_df: pd.DataFrame,
+                            dividends: pd.DataFrame,
+                            use_split_base: bool,
+                            stats: dict,
+                            workers: int = 1) -> pd.DataFrame:
+    D = _prep_dividends(dividends)
+    out_parts = []
+    div_stats: Dict[str, Dict[str, Any]] = {}
+
+    groups = [(gid, g.sort_values("datetime").copy()) for gid, g in px_df.groupby("id")]
+    if workers <= 1:
+        for gid, g in tqdm(groups, desc="Dividend factors per id"):
+            _DIVS_TABLE = D
+            res, st = _dividend_factors_for_id_worker((gid, g, use_split_base))
+            out_parts.append(res)
+            div_stats[gid] = st
+    else:
+        with ProcessPoolExecutor(max_workers=workers,
+                                 initializer=_init_worker,
+                                 initargs=(None, D)) as ex:
+            futs = {ex.submit(_dividend_factors_for_id_worker, (gid, g, use_split_base)): gid for gid, g in groups}
+            for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Dividend factors per id"):
+                gid = futs[fut]
+                res, st = fut.result()
+                out_parts.append(res)
+                div_stats[gid] = st
+
+    stats["dividends"] = div_stats
+    return pd.concat(out_parts, ignore_index=True)
+
+
+# =============================================================
+# Apply factors (BATCH)
+# =============================================================
+
+def _apply_splits(px_id: pd.DataFrame, F: pd.DataFrame) -> pd.DataFrame:
+    m = px_id.merge(F, on=["id", "event_day"], how="left")
+    m["split_price_factor"]  = m["split_price_factor"].fillna(1.0)
+    m["split_volume_factor"] = m["split_volume_factor"].fillna(1.0)
+    m["close_split"]  = m["close"]  * m["split_price_factor"]
+    m["volume_split"] = m["volume"] * m["split_volume_factor"]
+    for col in ("open","high","low"):
+        if col in m.columns:
+            m[f"{col}_split"] = m[col] * m["split_price_factor"]
+    return m
+
+def _apply_dividends(px_df: pd.DataFrame, G: pd.DataFrame, use_split_base: bool) -> pd.DataFrame:
+    m = px_df.merge(G, on=["id", "event_day"], how="left")
+    m["tr_price_factor"] = m["tr_price_factor"].fillna(1.0)
+    base_col = "close_split" if use_split_base and "close_split" in m.columns else "close"
+    m["close_tr"] = m[base_col] * m["tr_price_factor"]
+    for col in ("open_split","high_split","low_split"):
+        if col in m.columns:
+            m[col.replace("_split","_tr")] = m[col] * m["tr_price_factor"]
+    return m
+
+def _renormalize_tr_to_one(px_df: pd.DataFrame, use_split_base: bool) -> pd.DataFrame:
+    base_col = "close_split" if use_split_base and "close_split" in px_df.columns else "close"
+    df = px_df.sort_values(["id", "datetime"]).copy()
+    last_vals = (df.groupby("id", as_index=False)[["close_tr", base_col]]
+                   .last()
+                   .rename(columns={"close_tr": "_last_tr", base_col: "_last_base"}))
+    df = df.merge(last_vals, on="id", how="left")
+    df["_renorm"] = df["_last_tr"] / df["_last_base"]
+    df["_renorm"] = df["_renorm"].where(df["_renorm"].notna() & (df["_renorm"] != 0), 1.0)
+
+    df["tr_price_factor"] = df["tr_price_factor"] / df["_renorm"]
+    df["close_tr"]        = df[base_col] * df["tr_price_factor"]
+    for col in ("open_split","high_split","low_split"):
+        if col in df.columns:
+            df[col.replace("_split","_tr")] = df[col] * df["tr_price_factor"]
+    return df.drop(columns=["_last_tr", "_last_base", "_renorm"])
+
+
+# =============================================================
+# Writers
+# =============================================================
+
+def _write_one_parquet(outpath: Path, g: pd.DataFrame) -> None:
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    g.to_parquet(outpath, index=False)
+
+def _select_columns_to_write(df: pd.DataFrame, materialize: str) -> List[str]:
+    base = ["datetime","ticker","id","close","volume","close_split","volume_split","close_tr"]
+    if materialize == "minimal":
+        return [c for c in base if c in df.columns]
+    if materialize == "close":
+        extra = ["split_price_factor","tr_price_factor"]
+        return [c for c in base + extra if c in df.columns]
+    ohlc = ["open_split","high_split","low_split","open_tr","high_tr","low_tr"]
+    extra = ["split_price_factor","tr_price_factor"]
+    cols = base + extra + [c for c in ohlc if c in df.columns]
+    return [c for c in cols if c in df.columns]
+
+def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, write_workers: int, materialize: str) -> None:
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
+    df["YYYY"] = df["datetime"].dt.year
+    df["MM"]   = df["datetime"].dt.month
+    if granularity == "minute":
+        df["DD"] = df["datetime"].dt.day
+
+    df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
+    cols_to_write = _select_columns_to_write(df, materialize)
+
+    if granularity == "day":
+        key_cols = ["ticker", "YYYY", "MM"]
+        n_tasks = int(df[key_cols].drop_duplicates().shape[0])
+        desc = "Writing day lake" if write_workers <= 1 else f"Writing day lake (parallel x{write_workers})"
+        if write_workers <= 1:
+            for (t, y, m), g in tqdm(df.groupby(key_cols), desc=desc):
+                outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}.parquet"
+                _write_one_parquet(outpath, g[cols_to_write].drop(columns=["YYYY","MM"], errors="ignore"))
+        else:
+            with ThreadPoolExecutor(max_workers=write_workers) as ex:
+                futures = []
+                for (t, y, m), g in df.groupby(key_cols):
+                    outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}.parquet"
+                    futures.append(ex.submit(_write_one_parquet, outpath, g[cols_to_write].drop(columns=["YYYY","MM"], errors="ignore")))
+                for _ in tqdm(as_completed(futures), total=n_tasks, desc=desc):
+                    _.result()
+
+    elif granularity == "minute":
+        key_cols = ["ticker", "YYYY", "MM", "DD"]
+        n_tasks = int(df[key_cols].drop_duplicates().shape[0])
+        desc = "Writing minute lake" if write_workers <= 1 else f"Writing minute lake (parallel x{write_workers})"
+        if write_workers <= 1:
+            for (t, y, m, d), g in tqdm(df.groupby(key_cols), desc=desc):
+                outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}" / f"{int(d):02d}.parquet"
+                _write_one_parquet(outpath, g[cols_to_write].drop(columns=["YYYY","MM","DD"], errors="ignore"))
+        else:
+            with ThreadPoolExecutor(max_workers=write_workers) as ex:
+                futures = []
+                for (t, y, m, d), g in df.groupby(key_cols):
+                    outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}" / f"{int(d):02d}.parquet"
+                    futures.append(ex.submit(_write_one_parquet, outpath, g[cols_to_write].drop(columns=["YYYY","MM","DD"], errors="ignore")))
+                for _ in tqdm(as_completed(futures), total=n_tasks, desc=desc):
+                    _.result()
+    else:
+        raise ValueError("granularity must be 'day' or 'minute'")
+
+
+# =============================================================
+# Manifest copy
+# =============================================================
+
+def _find_manifest_near_prices(prices: Path) -> Optional[Path]:
+    base = prices if prices.is_dir() else prices.parent
+    for p in [base, base.parent, base.parent.parent]:
+        if not p or str(p) == str(p.parent):
+            continue
+        cand = p / "manifest.json"
+        if cand.exists():
+            return cand
+    return None
+
+def _copy_manifest(prices: Path, outdir: Path, manifest_src: Optional[Path], skip: bool = False) -> Optional[Path]:
+    if skip:
+        return None
+    src = None
+    if manifest_src is not None:
+        src = Path(manifest_src)
+        if not src.exists():
+            print(f"[WARN] --manifest-src provided but not found: {src}")
+            src = None
+    if src is None:
+        src = _find_manifest_near_prices(prices)
+    if src is None:
+        print("[INFO] No manifest.json found near --prices; skipping copy.")
+        return None
+    dst = outdir / "manifest.json"
+    try:
+        shutil.copy2(src, dst)
+        print(f"[INFO] Copied manifest.json from {src} -> {dst}")
+        return dst
+    except Exception as e:
+        print(f"[WARN] Failed to copy manifest.json: {e}")
+        return None
+
+
+# =============================================================
+# Summary output
+# =============================================================
+
+def _write_summary_csv(stats: dict, outdir: Path, px_df: pd.DataFrame, adjust_mode: str, use_split_base: bool) -> Path:
+    rows = []
+    ids = sorted(px_df["id"].unique())
+    last_dt_per_id = px_df.groupby("id", as_index=False)["datetime"].max().rename(columns={"datetime": "last_datetime"})
+    last_dt_map = dict(zip(last_dt_per_id["id"], last_dt_per_id["last_datetime"]))
+
+    for gid in ids:
+        split_rec = (stats.get("splits", {}) or {}).get(gid, {})
+        div_rec   = (stats.get("dividends", {}) or {}).get(gid, {})
+
+        ticker = (split_rec.get("ticker") or
+                  div_rec.get("ticker") or
+                  px_df.loc[px_df["id"] == gid, "ticker"].iloc[0])
+
+        rows.append({
+            "id": gid,
+            "ticker": ticker,
+            "adjust_mode": adjust_mode,
+            "tr_base": "split" if (use_split_base and adjust_mode in ("both", "dividends")) else "-",
+            "split_events_aligned": int(split_rec.get("events_aligned", 0)),
+            "split_cum_ratio": float(split_rec.get("cum_ratio", 1.0)),
+            "last_split_raw_date": split_rec.get("last_raw_date"),
+            "last_split_aligned_day": split_rec.get("last_aligned_day"),
+            "dividend_event_days": int(div_rec.get("event_days", 0)),
+            "dividend_total_cash": float(div_rec.get("total_cash", 0.0)),
+            "last_dividend_raw_date": div_rec.get("last_raw_date"),
+            "last_dividend_aligned_day": div_rec.get("last_aligned_day"),
+            "last_datetime": last_dt_map.get(gid),
+            "used_fallback": bool(split_rec.get("fallback")) or bool(div_rec.get("fallback")),
+        })
+
+    summary = pd.DataFrame(rows).sort_values(["ticker", "id"]).reset_index(drop=True)
+    outpath = outdir / "_event_summary.csv"
+    summary.to_csv(outpath, index=False)
+    return outpath
+
+def _print_aligned_summary(summary: pd.DataFrame) -> None:
+    dt_cols = ["last_split_raw_date", "last_split_aligned_day",
+               "last_dividend_raw_date", "last_dividend_aligned_day", "last_datetime"]
+    for c in dt_cols:
+        if c in summary.columns and not np.issubdtype(summary[c].dtype, np.datetime64):
+            summary[c] = pd.to_datetime(summary[c], errors="coerce")
+
+    def fdate(x):
+        return x.date().isoformat() if pd.notna(x) else "—"
+
+    rows = []
+    for _, r in summary.iterrows():
+        tkr = str(r["ticker"])
+        splits = int(r["split_events_aligned"])
+        cumr = float(r["split_cum_ratio"])
+        ls_raw = fdate(r.get("last_split_raw_date"))
+        ls_align = fdate(r.get("last_split_aligned_day"))
+        divd = int(r["dividend_event_days"])
+        cash = float(r["dividend_total_cash"])
+        ld_raw = fdate(r.get("last_dividend_raw_date"))
+        ld_align = fdate(r.get("last_dividend_aligned_day"))
+        trb = str(r["tr_base"])
+
+        col_split = f"splits={splits:>3d} (cum_ratio={cumr:g}, last={ls_raw}→{ls_align})"
+        col_div   = f"div_days={divd:>3d} (cash=${cash:.2f}, last={ld_raw}→{ld_align})"
+        col_tr    = f"TR base={trb}"
+        rows.append((tkr, col_split, col_div, col_tr))
+
+    w_t = max(len(t) for t, _, _, _ in rows + [("TICKER", "", "", "")])
+    w_s = max(len(s) for _, s, _, _ in rows + [("", "SPLITS", "", "")])
+    w_d = max(len(d) for _, _, d, _ in rows + [("", "", "DIVIDENDS", "")])
+    w_tr = max(len(tr) for _, _, _, tr in rows + [("", "", "", "TR")])
+
+    header = f"{'TICKER'.ljust(w_t)} | {'SPLITS'.ljust(w_s)} | {'DIVIDENDS'.ljust(w_d)} | {'TR'.ljust(w_tr)}"
+    sep = "-" * len(header)
+    print("\n===== Event Alignment Summary =====")
+    print(header)
+    print(sep)
+    for t, s, d, tr in rows:
+        print(f"{t.ljust(w_t)} | {s.ljust(w_s)} | {d.ljust(w_d)} | {tr.ljust(w_tr)}")
+
+
+# =============================================================
+# Streaming helpers (minute mode)
+# =============================================================
+
+def _iter_minute_day_files(root: Path, tickers: Optional[List[str]]) -> List[Tuple[str, Path, pd.Timestamp]]:
+    """Return list of (ticker, file_path, event_day) for minute lake: <root>/<TICKER>/<YYYY>/<MM>/<DD>.parquet"""
+    root = Path(root)
+    tset = set([t.strip().upper() for t in tickers]) if tickers else None
+    out: List[Tuple[str, Path, pd.Timestamp]] = []
+
+    for tdir in sorted([p for p in root.iterdir() if p.is_dir()]):
+        # FIX: do NOT use pandas .str accessor on a Python string
+        tkr = str(tdir.name).strip().upper()
+        if tset and tkr not in tset:
+            continue
+
+        for ydir in sorted([p for p in tdir.iterdir() if p.is_dir()]):
+            for mdir in sorted([p for p in ydir.iterdir() if p.is_dir()]):
+                for f in sorted(mdir.iterdir()):
+                    if f.suffix != ".parquet":
+                        continue
+                    try:
+                        day = pd.Timestamp(int(ydir.name), int(mdir.name), int(f.stem)).normalize()
+                    except Exception:
+                        continue
+                    out.append((tkr, f, day))
+    return out
+
+
+def _attach_id_days(days: pd.DataFrame, sm: pd.DataFrame) -> pd.DataFrame:
+    """Attach an id per (ticker, event_day, path); never drop out-of-window days; fallback to NOFIGI__<TICKER>."""
+    sm = sm.copy()
+    sm["ticker"] = sm["ticker"].astype(str).str.strip().str.upper()
+    if "composite_figi" not in sm.columns:
+        sm["composite_figi"] = pd.NA
+    sm["effective_start"] = pd.to_datetime(sm["effective_start"], errors="coerce")
+    sm["effective_end"]   = pd.to_datetime(sm["effective_end"], errors="coerce")
+
+    d = days.copy()
+    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+
+    m = d.merge(
+        sm[["ticker","composite_figi","effective_start","effective_end"]],
+        on="ticker", how="left"
+    )
+
+    m["in_window"] = (
+        (m["effective_start"].notna()) &
+        (m["event_day"] >= m["effective_start"]) &
+        (m["effective_end"].isna() | (m["event_day"] <= m["effective_end"]))
+    )
+
+    m["_rank"] = np.where(m["in_window"], 1, 2)
+    m = (m.sort_values(["ticker","event_day","_rank","effective_start"])
+           .drop_duplicates(["ticker","event_day","path"], keep="last"))
+
+    m["id"] = m["composite_figi"]
+    m["id"] = m["id"].where(m["id"].notna(), "NOFIGI__" + m["ticker"])
+
+    return m[["ticker","event_day","id","path"]]
+
+def _read_first_last_close(path: Path, ticker: Optional[str]) -> Tuple[float, float]:
+    """Return (first_close, last_close) for the specific ticker in a minute day-file; supports multi-ticker files."""
+    try:
+        df = pd.read_parquet(path, columns=["datetime","close","ticker"])
+    except Exception:
+        try:
+            df = pd.read_parquet(path, columns=["datetime","close","T"]).rename(columns={"T":"ticker"})
+        except Exception:
+            df = pd.read_parquet(path, columns=["datetime","close"])
+            ticker = None
+
+    if ticker is not None and "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df = df[df["ticker"] == ticker]
+
+    if df.empty:
+        return (np.nan, np.nan)
+    df = df.sort_values("datetime")
+    return float(df["close"].iloc[0]), float(df["close"].iloc[-1])
+
+def _scan_day_edges(days_df: pd.DataFrame, threads: int = 4) -> pd.DataFrame:
+    """For each (ticker, event_day, path), read first/last close; compute raw gap vs prior day last."""
+    rows = []
+    tasks = [(r.ticker, r.event_day, r.path) for r in days_df.itertuples()]
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        futs = {ex.submit(_read_first_last_close, Path(p), t): (t, d, p) for (t, d, p) in tasks}
+        for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Scanning minute day edges (threads x{threads})"):
+            t, d, p = futs[fut]
+            try:
+                f, l = fut.result()
+            except Exception:
+                f, l = (np.nan, np.nan)
+            rows.append((t, d, f, l))
+    edges = pd.DataFrame(rows, columns=["ticker","event_day","first_close","last_close"])
+    edges = edges.sort_values(["ticker","event_day"])
+    edges["prev_last"] = edges.groupby("ticker")["last_close"].shift(1)
+    edges["raw_gap"] = edges["first_close"] / edges["prev_last"]
+    return edges
+
+def _guess_split_ratio_from_gap(gap: float) -> Optional[float]:
+    if not np.isfinite(gap) or gap <= 0:
+        return None
+    inv = gap if gap > 1 else 1.0 / gap
+    candidates = np.array([2, 3, 4, 5, 10, 20])
+    idx = int(np.argmin(np.abs(candidates - inv)))
+    r = float(candidates[idx])
+    return r if abs(inv - r) / r <= 0.15 else None
+
+def _build_split_factors_from_days(id_days: pd.DataFrame,
+                                   spl: pd.DataFrame,
+                                   edges: Optional[pd.DataFrame],
+                                   detect_gaps: bool) -> pd.DataFrame:
+    s = _prep_splits(spl)
+    out = []
+
+    E = None
+    if edges is not None:
+        E = edges.copy()
+        E["ticker"] = E["ticker"].astype(str).str.strip().str.upper()
+
+    for tkr, g in tqdm(id_days.groupby("ticker"), desc="Split factors per ticker (days)"):
+        # IMPORTANT: reset_index to avoid index misalignment later
+        days = (g[["event_day"]]
+                .drop_duplicates()
+                .sort_values("event_day")
+                .reset_index(drop=True))
+
+        ev = (s[s["ticker"] == tkr][["execution_date","ratio"]]
+                .dropna()
+                .sort_values("execution_date"))
+
+        if ev.empty:
+            per_day = pd.DataFrame({"event_day": [], "ratio": []})
+        else:
+            aligned = pd.merge_asof(
+                ev.rename(columns={"execution_date":"event_anchor"}),
+                days.rename(columns={"event_day":"event_anchor"}),
+                on="event_anchor", direction="forward", allow_exact_matches=True
+            ).rename(columns={"event_anchor":"event_day"}).dropna(subset=["event_day"])
+            per_day = aligned.groupby("event_day", as_index=False)["ratio"].prod()
+
+        # Optional raw-gap detection/override
+        if detect_gaps and E is not None:
+            e_t = E[E["ticker"] == tkr].dropna(subset=["raw_gap"])
+            if not e_t.empty:
+                def _guess(gap: float) -> Optional[float]:
+                    if not np.isfinite(gap) or gap <= 0: return None
+                    inv = gap if gap > 1 else 1.0 / gap
+                    cands = np.array([2,3,4,5,10,20])
+                    r = float(cands[np.argmin(np.abs(cands - inv))])
+                    return r if abs(inv - r) / r <= 0.15 else None
+
+                e_t = e_t.copy()
+                e_t["ratio_guess"] = e_t["raw_gap"].apply(_guess)
+                cand = e_t.dropna(subset=["ratio_guess"])[["event_day","ratio_guess"]]
+                if not cand.empty:
+                    per_day = per_day.set_index("event_day")
+                    for d, r in cand.itertuples(index=False):
+                        window = per_day.loc[per_day.index.isin([d - pd.Timedelta(days=1), d, d + pd.Timedelta(days=1)])]
+                        similar = (window["ratio"] / r).abs().between(0.85, 1.15).any() if not window.empty else False
+                        if not similar:
+                            per_day.loc[d, "ratio"] = r
+                        else:
+                            d1 = d + pd.Timedelta(days=1)
+                            if d1 in per_day.index and abs(per_day.loc[d1, "ratio"]/r - 1) <= 0.15:
+                                per_day = per_day.drop(index=d1)
+                                per_day.loc[d, "ratio"] = r
+                    per_day = per_day.reset_index()
+
+        e = days.merge(per_day, on="event_day", how="left")
+        e["ratio"] = pd.to_numeric(e["ratio"], errors="coerce").fillna(1.0)
+        e["F"] = e["ratio"].cumprod()
+        F_last = float(e["F"].iloc[-1]) if len(e) else 1.0
+
+        tmp = days.copy()
+        # Use to_numpy() to ignore index labels and keep row-wise alignment
+        tmp["split_price_factor"]  = (e["F"] / F_last).to_numpy()
+        tmp["split_volume_factor"] = (F_last / e["F"]).to_numpy()
+        tmp["ticker"] = tkr
+        out.append(tmp)
+
+    return pd.concat(out, ignore_index=True)
+
+
+def _build_daily_prior_base(id_days: pd.DataFrame,
+                            use_split_base: bool,
+                            F: pd.DataFrame,
+                            edges: Optional[pd.DataFrame]) -> pd.DataFrame:
+    if edges is None:
+        raise RuntimeError("edges must be provided in streaming mode to avoid rescanning the lake.")
+    base = id_days.merge(
+        edges[["ticker","event_day","last_close"]].rename(columns={"last_close":"close_eod"}),
+        on=["ticker","event_day"], how="left"
+    )[["id","event_day","ticker","close_eod"]]
+
+    if use_split_base:
+        base = base.merge(F[["ticker","event_day","split_price_factor"]],
+                          on=["ticker","event_day"], how="left")
+        base["split_price_factor"] = base["split_price_factor"].fillna(1.0)
+        base["base"] = base["close_eod"] * base["split_price_factor"]
+        base = base.drop(columns=["split_price_factor"])
+    else:
+        base["base"] = base["close_eod"]
+
+    base = base[["id","event_day","base"]].sort_values(["id","event_day"])
+    return base
+
+def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
+    d = div.copy()
+    ex = "ex_date" if "ex_date" in d.columns else "ex_dividend_date"
+    amt = "amount" if "amount" in d.columns else "cash_amount"
+    if "ticker" not in d.columns and "T" in d.columns:
+        d = d.rename(columns={"T":"ticker"})
+    if "composite_figi" not in d.columns:
+        d["composite_figi"] = pd.NA
+    d = d.rename(columns={ex:"ex_date", amt:"amount"})
+    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize()
+    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+    d["event_id"] = np.where(d["composite_figi"].notna(), d["composite_figi"], "NOFIGI__"+d["ticker"])
+    return d[["ex_date","amount","ticker","event_id"]]
+
+def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    d = _prep_divs_for_stream(div)
+    out = []
+    cal = id_days[["ticker","event_day"]].drop_duplicates().sort_values(["ticker","event_day"])
+
+    b = base.merge(id_days[["ticker","id","event_day"]].drop_duplicates(),
+                   on=["id","event_day"], how="left")
+    b = b.sort_values(["ticker","event_day"])
+    b["prior_base"] = b.groupby("ticker")["base"].shift(1)
+
+    for tkr, g in tqdm(cal.groupby("ticker"), desc="Dividend factors per ticker (days)"):
+        # IMPORTANT: reset_index here too
+        days = g[["event_day"]].copy().reset_index(drop=True)
+        prb  = b[b["ticker"]==tkr][["event_day","prior_base"]]
+        ev = d[d["ticker"] == tkr][["ex_date","amount"]].dropna().sort_values("ex_date")
+
+        if ev.empty:
+            tmp = days.copy()
+            tmp["tr_price_factor"] = 1.0
+        else:
+            aligned = pd.merge_asof(
+                ev.rename(columns={"ex_date":"event_anchor"}),
+                days.rename(columns={"event_day":"event_anchor"}),
+                on="event_anchor", direction="forward", allow_exact_matches=True
+            ).rename(columns={"event_anchor":"event_day"}).dropna(subset=["event_day"])
+            per_day_amt = aligned.groupby("event_day", as_index=False)["amount"].sum()
+
+            T = (days.merge(prb, on="event_day", how="left")
+                      .merge(per_day_amt, on="event_day", how="left"))
+            T["g"] = 1.0
+            m = T["amount"].notna() & T["prior_base"].notna() & (T["prior_base"] > 0)
+            T.loc[m, "g"] = (T.loc[m, "prior_base"] - T.loc[m, "amount"]) / T.loc[m, "prior_base"]
+            T["G"] = T["g"].cumprod()
+            G_last = float(T["G"].iloc[-1]) if len(T) else 1.0
+
+            tmp = days.copy()
+            tmp["tr_price_factor"] = (T["G"] / G_last).to_numpy()
+
+        tmp["ticker"] = tkr
+        out.append(tmp)
+
+    return pd.concat(out, ignore_index=True)
+
+
+def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int, materialize: str, debug_dump: Optional[Path]=None):
+    FG = F.merge(G, on=["ticker","event_day"], how="outer")
+    FG["split_price_factor"]  = FG["split_price_factor"].fillna(1.0)
+    FG["split_volume_factor"] = FG["split_volume_factor"].fillna(1.0)
+    FG["tr_price_factor"]     = FG["tr_price_factor"].fillna(1.0)
+
+    # Robust string-keyed factor map
+    FG["day_key"] = pd.to_datetime(FG["event_day"]).dt.strftime("%Y-%m-%d")
+    factormap: Dict[Tuple[str, str], Tuple[float, float, float]] = {
+        (r.ticker, r.day_key): (
+            float(r.split_price_factor),
+            float(r.split_volume_factor),
+            float(r.tr_price_factor),
+        )
+        for r in FG.itertuples()
+    }
+
+    if debug_dump is not None:
+        debug_dump.mkdir(parents=True, exist_ok=True)
+        FG[["ticker","event_day","day_key","split_price_factor","split_volume_factor","tr_price_factor"]].to_csv(debug_dump/"_factormap.csv", index=False)
+
+    def _do_one(row) -> None:
+        tkr, path, day, gid = row.ticker, Path(row.path), row.event_day, row.id
+        df = pd.read_parquet(path)
+        # Normalize & filter to the target ticker
+        if "ticker" in df.columns or "T" in df.columns:
+            if "T" in df.columns and "ticker" not in df.columns:
+                df = df.rename(columns={"T":"ticker"})
+            df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+            df = df[df["ticker"] == tkr]
+        else:
+            df["ticker"] = tkr
+
+        if df.empty:
+            return
+
+        if "close" not in df.columns and "c" in df.columns:
+            df = df.rename(columns={"c":"close"})
+        if "volume" not in df.columns and "v" in df.columns:
+            df = df.rename(columns={"v":"volume"})
+        if "datetime" in df.columns:
+            df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
+        else:
+            df["datetime"] = day
+
+        day_key = pd.Timestamp(day).date().isoformat()
+        sp, sv, tr = factormap.get((tkr, day_key), (1.0, 1.0, 1.0))
+        if (sp, sv, tr) == (1.0, 1.0, 1.0):
+            for delta in (-1, 1):
+                day_key_alt = (pd.Timestamp(day) + pd.Timedelta(days=delta)).date().isoformat()
+                sp, sv, tr = factormap.get((tkr, day_key_alt), (sp, sv, tr))
+                if (sp, sv, tr) != (1.0, 1.0, 1.0):
+                    break
+
+        df["id"] = gid
+
+        # split-adjust
+        df["close_split"]  = df["close"]  * sp
+        df["volume_split"] = df["volume"] * sv
+        if materialize == "ohlc":
+            for col in ("open","high","low"):
+                if col in df.columns:
+                    df[f"{col}_split"] = df[col] * sp
+
+        # TR
+        base_col = "close_split"
+        df["tr_price_factor"] = tr
+        df["close_tr"] = df[base_col] * tr
+        if materialize == "ohlc":
+            for col in ("open_split","high_split","low_split"):
+                if col in df.columns:
+                    df[col.replace("_split","_tr")] = df[col] * tr
+
+        outpath = outdir / tkr / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}.parquet"
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+        cols = _select_columns_to_write(df, materialize)
+        df[cols].to_parquet(outpath, index=False)
+
+    rows = list(id_days.itertuples())
+    if write_workers <= 1:
+        for r in tqdm(rows, desc="Writing minute lake (stream)"):
+            _do_one(r)
+    else:
+        with ThreadPoolExecutor(max_workers=write_workers) as ex:
+            futs = [ex.submit(_do_one, r) for r in rows]
+            for _ in tqdm(as_completed(futs), total=len(futs), desc=f"Writing minute lake (stream x{write_workers})"):
+                _.result()
+
+
+# =============================================================
+# Defaults
+# =============================================================
+
+def _default_workers() -> int:
+    try:
+        return max(1, (os.cpu_count() or 2) - 1)
+    except Exception:
+        return 1
+
+def _default_write_workers() -> int:
+    try:
+        return min(8, max(1, (os.cpu_count() or 2)))
+    except Exception:
+        return 1
+
+
+# =============================================================
+# Main
+# =============================================================
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Build split/dividend adjustments and write a partitioned parquet lake with 'datetime'."
+    )
+    ap.add_argument("--prices", type=Path, required=True,
+                    help="CSV/Parquet FILE or DIRECTORY (recursively read *.parquet)")
+    ap.add_argument("--refdir", type=Path, required=True,
+                    help="Directory with security_master.parquet, stock_splits.parquet, cash_dividends.parquet")
+    ap.add_argument("--tickers", type=Path, default=None,
+                    help="Optional JSON list of tickers to prefilter files and rows")
+    ap.add_argument("--start", type=str, default=None, help="Optional start date YYYY-MM-DD")
+    ap.add_argument("--end", type=str, default=None, help="Optional end date YYYY-MM-DD")
+    ap.add_argument("--granularity", choices=["day", "minute"], required=True,
+                    help="Granularity of the parquet lake layout to write")
+    ap.add_argument("--outdir", type=Path, required=True,
+                    help="Output directory for adjusted parquet lake")
+    ap.add_argument("--workers", type=int, default=_default_workers(),
+                    help="Parallel workers for factor building (per-id). Set 1 to disable.")
+    ap.add_argument("--write-workers", type=int, default=_default_write_workers(),
+                    help="Parallel threads for writing parquet files. Set 1 to disable.")
+    ap.add_argument("--adjust", choices=["splits", "dividends", "both"], default="both",
+                    help="Which adjustments to apply (default: both)")
+    ap.add_argument("--materialize", choices=["minimal","close","ohlc"], default="minimal",
+                    help="Columns to persist.")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Print per-ticker summary of aligned split/dividend events")
+    ap.add_argument("--manifest-src", type=Path, default=None,
+                    help="Optional explicit path to manifest.json to copy to OUTDIR")
+    ap.add_argument("--no-copy-manifest", action="store_true",
+                    help="Skip copying manifest.json to OUTDIR")
+
+    # Streaming (OOM-safe) for minute lakes
+    ap.add_argument("--minute-stream", action="store_true",
+                    help="Use streaming minute mode (<TICKER>/<YYYY>/<MM>/<DD>.parquet files one-by-one).")
+    ap.add_argument("--stream-read-workers", type=int, default=min(8, _default_write_workers()),
+                    help="Threads for minute day-edge scan & base building.")
+    ap.add_argument("--no-detect-split-gaps", action="store_true",
+                    help="Disable raw gap detection for split-day alignment in minute streaming.")
+
+    # NEW: debug dump
+    ap.add_argument("--debug-dump", type=Path, default=None,
+                    help="Directory to dump CSVs: _id_days, _edges, _split_F, _div_G, _factormap.")
+
+    args = ap.parse_args()
+
+    tickers = None
+    if args.tickers is not None:
+        try:
+            tickers = sorted([t.strip().upper() for t in json.loads(Path(args.tickers).read_text())])
+        except Exception:
+            tickers = [t.strip().upper() for t in Path(args.tickers).read_text().splitlines() if t.strip()]
+
+    # Load reference tables
+    sm  = pd.read_parquet(args.refdir / "security_master.parquet")
+    spl = pd.read_parquet(args.refdir / "stock_splits.parquet")
+    div = pd.read_parquet(args.refdir / "cash_dividends.parquet")
+
+    # Streaming path for huge MINUTE lakes
+    if args.granularity == "minute" and args.minute_stream:
+        files = _iter_minute_day_files(args.prices, tickers)
+        if args.start or args.end:
+            s = pd.to_datetime(args.start) if args.start else None
+            e = pd.to_datetime(args.end) if args.end else None
+            files = [(t,p,d) for (t,p,d) in files if (s is None or d>=s) and (e is None or d<=e)]
+        if not files:
+            raise SystemExit("No minute day-files found under --prices for the selection.")
+        days_df = pd.DataFrame(files, columns=["ticker","path","event_day"])
+        id_days = _attach_id_days(days_df, sm)
+
+        if args.debug_dump is not None:
+            args.debug_dump.mkdir(parents=True, exist_ok=True)
+            id_days.to_csv(args.debug_dump/"_id_days.csv", index=False)
+
+        # Pre-scan minute files for first/last closes (split gap & TR base)
+        detect_gaps = not args.no_detect_split_gaps
+        edges = _scan_day_edges(days_df, threads=args.stream_read_workers)
+        if args.debug_dump is not None:
+            edges.to_csv(args.debug_dump/"_edges.csv", index=False)
+
+        # Ticker-day split factors
+        F = _build_split_factors_from_days(id_days, spl, edges=edges, detect_gaps=detect_gaps) \
+            if args.adjust in ("splits","both") else id_days[["ticker","event_day"]].assign(split_price_factor=1.0, split_volume_factor=1.0)
+        if args.debug_dump is not None:
+            F.to_csv(args.debug_dump/"_split_F.csv", index=False)
+
+        # Dividend factors (prior-day base)
+        use_split_base = args.adjust == "both"
+        if args.adjust in ("dividends","both"):
+            base = _build_daily_prior_base(id_days, use_split_base=use_split_base, F=F, edges=edges)
+            G = _build_dividend_factors_from_days(id_days, div, base)
+        else:
+            G = id_days[["ticker","event_day"]].assign(tr_price_factor=1.0)
+        if args.debug_dump is not None:
+            G.to_csv(args.debug_dump/"_div_G.csv", index=False)
+
+        # Write per day-file
+        args.outdir.mkdir(parents=True, exist_ok=True)
+        _stream_write_minutes(id_days, F, G, args.outdir, args.write_workers, args.materialize, debug_dump=args.debug_dump)
+
+        print("\nDone (streaming). Wrote adjusted parquet lake to", args.outdir.resolve())
+        _copy_manifest(args.prices, args.outdir, args.manifest_src, skip=args.no_copy_manifest)
+        return
+
+    # ===== Batch path (OK for day lakes) =====
+
+    px  = _read_prices(args.prices, tickers=tickers, start=args.start, end=args.end)
+    px_id = _attach_id(px, sm)
+    px_id["close_split"]  = px_id["close"]
+    px_id["volume_split"] = px_id["volume"]
+
+    stats: dict = {}
+    if args.adjust in ("splits", "both"):
+        F      = _build_split_factors(px_id, spl, stats=stats, workers=args.workers)
+        px_spl = _apply_splits(px_id, F)
+    else:
+        px_spl = px_id.copy()
+
+    if args.adjust in ("dividends", "both"):
+        use_split_base = (args.adjust == "both")
+        G     = _build_dividend_factors(px_spl, div, use_split_base=use_split_base, stats=stats, workers=args.workers)
+        px_tr = _apply_dividends(px_spl, G, use_split_base=use_split_base)
+        px_tr = _renormalize_tr_to_one(px_tr, use_split_base=use_split_base)
+    else:
+        px_tr = px_spl.copy()
+        px_tr["tr_price_factor"] = 1.0
+        px_tr["close_tr"] = px_tr["close_split"]
+        use_split_base = False
+
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize)
+
+    csv_path = _write_summary_csv(stats, args.outdir, px_tr, args.adjust, use_split_base)
+    if args.verbose:
+        summary = pd.read_csv(csv_path, parse_dates=[
+            "last_split_raw_date", "last_split_aligned_day",
+            "last_dividend_raw_date", "last_dividend_aligned_day",
+            "last_datetime"
+        ])
+        _print_aligned_summary(summary)
+
+    _copy_manifest(args.prices, args.outdir, args.manifest_src, skip=args.no_copy_manifest)
+
+    print(f"\nSummary CSV written to: {csv_path}")
+    print("Done. Wrote adjusted parquet lake to", args.outdir.resolve())
+    print(f"Mode --adjust={args.adjust} | Workers={args.workers} | Write-Workers={args.write_workers} | Granularity={args.granularity} | Materialize={args.materialize}")
+
+
+if __name__ == "__main__":
+    main()
