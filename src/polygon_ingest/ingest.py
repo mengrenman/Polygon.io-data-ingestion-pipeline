@@ -9,6 +9,8 @@ Source layout (assumed):
 Output layout:
   tf=minute : <out>/<TICKER>/<YYYY>/<MM>/<DD>.parquet
   tf=day    : <out>/<TICKER>/<YYYY>/<MM>.parquet
+  YYYY/MM/DD is the US/Eastern *trading date* (not the UTC date). The 'datetime' column is
+  tz-aware US/Eastern and prices are float64.
 
 Highlights
 - One codepath for both timeframes (tf={"minute","day"})
@@ -217,12 +219,14 @@ def worker(
                     continue
 
                 dtypes = {ticker_col: "string", ts_col: "object"}
-                for want, dtype in (("open","float32"),("high","float32"),
-                                    ("low","float32"),("close","float32"),
+                # float64: float32 carries ~7 significant digits, which loses cents above ~$100k
+                # (BRK.A) and is marginal in the tens of thousands. zstd keeps the size cost small.
+                for want, dtype in (("open","float64"),("high","float64"),
+                                    ("low","float64"),("close","float64"),
                                     ("volume","int64"),("transactions","int64"),
-                                    ("o","float32"),("h","float32"),
-                                    ("l","float32"),("c","float32"),
-                                    ("v","int64"),("n","int64"),("vw","float32")):
+                                    ("o","float64"),("h","float64"),
+                                    ("l","float64"),("c","float64"),
+                                    ("v","int64"),("n","int64"),("vw","float64")):
                     if want in header: dtypes[want] = dtype
                 usecols = list(dtypes)
 
@@ -259,18 +263,22 @@ def worker(
 
                 if df.empty: continue
 
-                # timestamps → UTC + local clock column
+                # timestamps → tz-aware US/Eastern; partition on the ET *trading date*.
+                # Polygon minute bars run 04:00–20:00 ET, so partitioning on the UTC date would
+                # push bars from 19:00/20:00 ET onward into the next day's file (and give them
+                # the next day's split/dividend factors downstream).
                 dt_utc = to_datetime_utc(df[ts_col])
-                df["yr_utc"] = dt_utc.dt.year.astype("Int16")
-                df["mo_utc"] = dt_utc.dt.month.astype("Int8")
+                dt_et  = dt_utc.dt.tz_convert(LOCAL_TZ)
+                df["yr_et"] = dt_et.dt.year.astype("Int16")
+                df["mo_et"] = dt_et.dt.month.astype("Int8")
                 if tf == "minute":
-                    df["day_utc"] = dt_utc.dt.day.astype("Int8")
-                df["datetime"] = dt_utc.dt.tz_convert(LOCAL_TZ)
+                    df["day_et"] = dt_et.dt.day.astype("Int8")
+                df["datetime"] = dt_et
 
                 if ts_col in df.columns:
                     df.drop(columns=[ts_col], inplace=True)
 
-                need = ["yr_utc","mo_utc"] + (["day_utc"] if tf == "minute" else [])
+                need = ["yr_et","mo_et"] + (["day_et"] if tf == "minute" else [])
                 df = df.dropna(subset=need)
                 if df.empty: continue
 
@@ -278,16 +286,16 @@ def worker(
 
                 # bucketize
                 if tf == "minute":
-                    for (sym, yr, mo, dd), sub in df.groupby(["ticker","yr_utc","mo_utc","day_utc"], observed=True):
+                    for (sym, yr, mo, dd), sub in df.groupby(["ticker","yr_et","mo_et","day_et"], observed=True):
                         buckets[(str(sym), int(yr), int(mo), int(dd))].append(sub)
                 else:
-                    for (sym, yr, mo), sub in df.groupby(["ticker","yr_utc","mo_utc"], observed=True):
+                    for (sym, yr, mo), sub in df.groupby(["ticker","yr_et","mo_et"], observed=True):
                         buckets[(str(sym), int(yr), int(mo))].append(sub)
 
     finally:
         # Write parquet per bucket
         if tf == "minute":
-            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_utc","mo_utc","day_utc"]
+            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_et","mo_et","day_et"]
             for (sym, yr, mo, dd), parts in buckets.items():
                 outdir = out_root / sym / f"{yr:04d}" / f"{mo:02d}"
                 outdir.mkdir(parents=True, exist_ok=True)
@@ -300,7 +308,7 @@ def worker(
                 pq.write_table(table, fout_tmp, compression="zstd")
                 fout_tmp.replace(fout)
         else:
-            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_utc","mo_utc"]
+            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_et","mo_et"]
             for (sym, yr, mo), parts in buckets.items():
                 outdir = out_root / sym / f"{yr:04d}"
                 outdir.mkdir(parents=True, exist_ok=True)

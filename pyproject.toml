@@ -6,8 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["pandas>=2.2","pyarrow>=16","numpy","tqdm","tenacity>=8","loguru>=0.7","typer>=0.12","polygon-api-client>=1.13","python-dotenv>=1.0"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 poly = "polygon_ingest.cli:app"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "legacy_scripts"]
+testpaths = ["tests"]

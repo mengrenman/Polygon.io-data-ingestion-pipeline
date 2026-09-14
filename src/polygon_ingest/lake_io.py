@@ -501,7 +501,9 @@ if "load_series" not in globals() or "load_events" not in globals():
             # merge on calendar date, not exact time
             df_un["__d"] = df_un["datetime"].dt.tz_convert(None).dt.normalize()
             df_ad["__d"] = df_ad["datetime"].dt.tz_convert(None).dt.normalize()
-            left  = df_un[[c for c in (["datetime","__d"] + base_cols) if c in df_un.columns]].copy()
+            # base_cols already starts with "datetime"; listing it twice produced duplicate column
+            # labels and made the final sort_values("datetime") raise.
+            left  = df_un[["__d"] + [c for c in base_cols if c in df_un.columns]].copy()
             right = df_ad[[c for c in (["__d"] + adj_cols) if c in df_ad.columns]].copy()
             df = _pd.merge(left, right, on="__d", how="left").drop(columns="__d", errors="ignore")
         else:
