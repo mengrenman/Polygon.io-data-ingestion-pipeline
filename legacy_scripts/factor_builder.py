@@ -43,6 +43,30 @@ def _detect_ts_unit(maxv: float) -> str:
     if maxv >= 1e11:  return "ms"
     return "s"
 
+LOCAL_TZ = "US/Eastern"
+
+def _to_naive_utc(s: pd.Series) -> pd.Series:
+    """Datetime series -> tz-naive UTC (tz-aware input is converted, not just stripped)."""
+    s = pd.to_datetime(s, errors="coerce")
+    if getattr(s.dt, "tz", None) is not None:
+        s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+    return s
+
+def _trading_day(dt_naive_utc: pd.Series) -> pd.Series:
+    """
+    US/Eastern calendar date (tz-naive midnight) for a datetime series (tz-naive = UTC).
+
+    Splits and ex-dividend dates are dated by the US trading day, so price rows must be keyed
+    the same way. Keying on the UTC date would put after-hours bars from 19:00/20:00 ET onward
+    into the *next* day and give them the next day's factors.
+    """
+    s = pd.to_datetime(dt_naive_utc, errors="coerce")
+    if getattr(s.dt, "tz", None) is None:
+        s = s.dt.tz_localize("UTC")
+    # as_unit("ns"): pandas>=3 may carry us-resolution dates (e.g. read back from parquet) while lake
+    # timestamps are ns; merge_asof refuses mixed resolutions, so every event-day key is pinned to ns.
+    return s.dt.tz_convert(LOCAL_TZ).dt.normalize().dt.tz_localize(None).dt.as_unit("ns")
+
 def _read_prices(path: Path,
                  tickers: Optional[List[str]] = None,
                  start: Optional[str] = None,
@@ -162,8 +186,8 @@ def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame) -> pd.DataFrame
 
     prx = prx.copy()
     prx["ticker"] = prx["ticker"].astype(str).str.strip().str.upper()
-    prx["datetime"] = pd.to_datetime(prx["datetime"]).dt.tz_localize(None)
-    prx["event_day"] = prx["datetime"].dt.normalize()
+    prx["datetime"] = _to_naive_utc(prx["datetime"])   # tz-naive UTC
+    prx["event_day"] = _trading_day(prx["datetime"])    # US/Eastern trading date
 
     m = prx.merge(
         sm[["composite_figi", "ticker", "effective_start", "effective_end"]],
@@ -193,7 +217,7 @@ def _prep_splits(splits: pd.DataFrame) -> pd.DataFrame:
     if "ratio" not in s.columns:
         raise ValueError("splits missing 'ratio' (or split_from/split_to)")
 
-    s["execution_date"] = pd.to_datetime(s["execution_date"]).dt.normalize()
+    s["execution_date"] = pd.to_datetime(s["execution_date"]).dt.normalize().dt.as_unit("ns")
     s["ratio"] = s["ratio"].astype(float)
 
     if "ticker" not in s.columns and "T" in s.columns:
@@ -216,7 +240,7 @@ def _prep_dividends(dividends: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("dividends missing ex-date or amount")
 
     d = d.rename(columns={ex_col: "ex_date", amt_col: "amount"})
-    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize()
+    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize().dt.as_unit("ns")
 
     if "ticker" not in d.columns and "T" in d.columns:
         d = d.rename(columns={"T": "ticker"})
@@ -295,10 +319,18 @@ def _dividend_factors_for_id_worker(payload: Tuple[str, pd.DataFrame, bool]) -> 
         raise RuntimeError("Worker missing dividends table")
 
     gpx = gpx.sort_values("datetime").copy()
-    base_series = gpx["close_split"] if use_split_base and "close_split" in gpx.columns else gpx["close"]
+    use_split = bool(use_split_base and "close_split" in gpx.columns)
+    base_series = gpx["close_split"] if use_split else gpx["close"]
     gpx["prior_base"] = base_series.shift(1)
+    # Split factor in force on each day. Polygon reports cash dividends in raw (as-declared)
+    # dollars per share; when the base is split-adjusted the amount must be scaled the same
+    # way, or a pre-split dividend looks split_ratio times too large.
+    if use_split and "split_price_factor" in gpx.columns:
+        gpx["spf"] = gpx["split_price_factor"].astype(float).fillna(1.0)
+    else:
+        gpx["spf"] = 1.0
 
-    cal = (gpx[["event_day", "prior_base"]]
+    cal = (gpx[["event_day", "prior_base", "spf"]]
            .drop_duplicates("event_day")
            .sort_values("event_day"))
 
@@ -328,12 +360,16 @@ def _dividend_factors_for_id_worker(payload: Tuple[str, pd.DataFrame, bool]) -> 
         per_day_amt = aligned.groupby("event_day", as_index=False)["amount"].sum()
         T = cal.merge(per_day_amt, on="event_day", how="left", validate="one_to_one")
 
+        # g_t = fraction of prior-day value retained after the ex-date cash payout (< 1).
+        # The backward total-return factor on day t reinvests every dividend that goes ex
+        # AFTER t:  prod_{s>t} g_s = G_last / G_t.  (G_t / G_last would charge the holder.)
         T["g"] = 1.0
         mask = T["amount"].notna() & T["prior_base"].notna() & (T["prior_base"] > 0)
-        T.loc[mask, "g"] = (T.loc[mask, "prior_base"] - T.loc[mask, "amount"]) / T.loc[mask, "prior_base"]
+        amt_adj = T.loc[mask, "amount"] * T.loc[mask, "spf"]
+        T.loc[mask, "g"] = (T.loc[mask, "prior_base"] - amt_adj) / T.loc[mask, "prior_base"]
         T["G"] = T["g"].cumprod()
         G_last = float(T["G"].iloc[-1])
-        T["tr_price_factor"] = T["G"] / G_last
+        T["tr_price_factor"] = G_last / T["G"]
 
         stats = {
             "ticker": tick,
@@ -356,6 +392,7 @@ def _build_split_factors(px_df: pd.DataFrame,
                          splits: pd.DataFrame,
                          stats: dict,
                          workers: int = 1) -> pd.DataFrame:
+    global _SPLITS_TABLE   # inline (workers<=1) path must set the module global the worker reads
     S = _prep_splits(splits)
     out_parts = []
     split_stats: Dict[str, Dict[str, Any]] = {}
@@ -386,6 +423,7 @@ def _build_dividend_factors(px_df: pd.DataFrame,
                             use_split_base: bool,
                             stats: dict,
                             workers: int = 1) -> pd.DataFrame:
+    global _DIVS_TABLE     # inline (workers<=1) path must set the module global the worker reads
     D = _prep_dividends(dividends)
     out_parts = []
     div_stats: Dict[str, Dict[str, Any]] = {}
@@ -665,7 +703,7 @@ def _iter_minute_day_files(root: Path, tickers: Optional[List[str]]) -> List[Tup
                     if f.suffix != ".parquet":
                         continue
                     try:
-                        day = pd.Timestamp(int(ydir.name), int(mdir.name), int(f.stem)).normalize()
+                        day = pd.Timestamp(int(ydir.name), int(mdir.name), int(f.stem)).normalize().as_unit("ns")
                     except Exception:
                         continue
                     out.append((tkr, f, day))
@@ -678,6 +716,11 @@ def _attach_id_days(days: pd.DataFrame, sm: pd.DataFrame) -> pd.DataFrame:
     sm["ticker"] = sm["ticker"].astype(str).str.strip().str.upper()
     if "composite_figi" not in sm.columns:
         sm["composite_figi"] = pd.NA
+    # pull_security_master() does not emit an effective window; default like the batch path does
+    if "effective_start" not in sm.columns:
+        sm["effective_start"] = pd.NaT
+    if "effective_end" not in sm.columns:
+        sm["effective_end"] = pd.NaT
     sm["effective_start"] = pd.to_datetime(sm["effective_start"], errors="coerce")
     sm["effective_end"]   = pd.to_datetime(sm["effective_end"], errors="coerce")
 
@@ -842,13 +885,16 @@ def _build_daily_prior_base(id_days: pd.DataFrame,
     if use_split_base:
         base = base.merge(F[["ticker","event_day","split_price_factor"]],
                           on=["ticker","event_day"], how="left")
-        base["split_price_factor"] = base["split_price_factor"].fillna(1.0)
-        base["base"] = base["close_eod"] * base["split_price_factor"]
+        base["spf"]  = base["split_price_factor"].fillna(1.0)
+        base["base"] = base["close_eod"] * base["spf"]
         base = base.drop(columns=["split_price_factor"])
     else:
+        base["spf"]  = 1.0
         base["base"] = base["close_eod"]
 
-    base = base[["id","event_day","base"]].sort_values(["id","event_day"])
+    # 'spf' (split factor in force that day) travels with the base so raw dividend amounts can
+    # be expressed in the same split-adjusted units as the base they are divided by.
+    base = base[["id","event_day","base","spf"]].sort_values(["id","event_day"])
     return base
 
 def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
@@ -860,7 +906,7 @@ def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
     if "composite_figi" not in d.columns:
         d["composite_figi"] = pd.NA
     d = d.rename(columns={ex:"ex_date", amt:"amount"})
-    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize()
+    d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize().dt.as_unit("ns")
     d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
     d["event_id"] = np.where(d["composite_figi"].notna(), d["composite_figi"], "NOFIGI__"+d["ticker"])
     return d[["ex_date","amount","ticker","event_id"]]
@@ -874,11 +920,13 @@ def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, 
                    on=["id","event_day"], how="left")
     b = b.sort_values(["ticker","event_day"])
     b["prior_base"] = b.groupby("ticker")["base"].shift(1)
+    if "spf" not in b.columns:
+        b["spf"] = 1.0
 
     for tkr, g in tqdm(cal.groupby("ticker"), desc="Dividend factors per ticker (days)"):
         # IMPORTANT: reset_index here too
         days = g[["event_day"]].copy().reset_index(drop=True)
-        prb  = b[b["ticker"]==tkr][["event_day","prior_base"]]
+        prb  = b[b["ticker"]==tkr][["event_day","prior_base","spf"]]
         ev = d[d["ticker"] == tkr][["ex_date","amount"]].dropna().sort_values("ex_date")
 
         if ev.empty:
@@ -894,14 +942,18 @@ def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, 
 
             T = (days.merge(prb, on="event_day", how="left")
                       .merge(per_day_amt, on="event_day", how="left"))
+            # Same math as the batch worker: scale raw cash by the day's split factor, then
+            # backward factor = prod of retained fractions for ex-dates AFTER t = G_last / G_t.
+            T["spf"] = T["spf"].fillna(1.0)
             T["g"] = 1.0
             m = T["amount"].notna() & T["prior_base"].notna() & (T["prior_base"] > 0)
-            T.loc[m, "g"] = (T.loc[m, "prior_base"] - T.loc[m, "amount"]) / T.loc[m, "prior_base"]
+            amt_adj = T.loc[m, "amount"] * T.loc[m, "spf"]
+            T.loc[m, "g"] = (T.loc[m, "prior_base"] - amt_adj) / T.loc[m, "prior_base"]
             T["G"] = T["g"].cumprod()
             G_last = float(T["G"].iloc[-1]) if len(T) else 1.0
 
             tmp = days.copy()
-            tmp["tr_price_factor"] = (T["G"] / G_last).to_numpy()
+            tmp["tr_price_factor"] = (G_last / T["G"]).to_numpy()
 
         tmp["ticker"] = tkr
         out.append(tmp)
@@ -950,7 +1002,7 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
         if "volume" not in df.columns and "v" in df.columns:
             df = df.rename(columns={"v":"volume"})
         if "datetime" in df.columns:
-            df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
+            df["datetime"] = _to_naive_utc(df["datetime"])   # tz-naive UTC, same as the batch path
         else:
             df["datetime"] = day
 

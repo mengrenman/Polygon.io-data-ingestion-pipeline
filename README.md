@@ -39,6 +39,13 @@ pip install -U pip
 pip install -e .
 ```
 
+Run the regression tests (adjustment math, ET-date partitioning):
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
 Set your API key (used in Step 4):
 
 - Add a repo-level `.env`:
@@ -261,6 +268,7 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
 
 ## Notes & Conventions
 
-- **Time zone:** all timestamps in UTC; day joins occur on **calendar date** (UTC).
-- **Total return (`close_tr`)**: built over split-adjusted prices, reinvesting cash dividends on ex-date.
+- **Time zone:** the `datetime` column in the unadjusted lake is tz-aware **US/Eastern**. Lake files are partitioned on the **ET trading date** (`<YYYY>/<MM>/<DD>`), and split/dividend factors are aligned on that same date, so after-hours bars (up to 20:00 ET) stay with their session instead of spilling into the next UTC day.
+- **Precision:** prices are stored as `float64`.
+- **Total return (`close_tr`)**: built over split-adjusted prices, reinvesting cash dividends on ex-date. Sanity check: on a day with no dividend `close_tr` moves exactly like `close_sa`, and across an ex-date where the price drops by exactly the dividend the `close_tr` return is 0. Polygon reports dividends in raw dollars, so amounts are scaled by the split factor in force before being divided by the split-adjusted base.
 - **QA plot normalization:** base-100 (first value → 100) to compare paths. Shapes are unchanged.
