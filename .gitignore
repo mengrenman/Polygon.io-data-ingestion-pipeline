@@ -1,0 +1,32 @@
+# --- secrets ---
+.env
+.env.*
+.polygon_api_key
+
+# --- generated data (lakes, refdata, manifests) ---
+lake/
+lake_adj/
+refdata/
+data/ref_data/
+manifest_*.json
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / editors ---
+.DS_Store
+.vscode/
+.idea/
