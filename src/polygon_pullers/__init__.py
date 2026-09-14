@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional, Dict, Any
+from typing import Iterable, List, Optional, Dict, Any, Sequence
 
 import pandas as pd
 from tqdm import tqdm
@@ -120,6 +120,77 @@ def _write_failures(path: str | Path, failed: List[tuple], *, what: str) -> None
         path.unlink()
 
 
+def holder_id(figi, cik, ticker) -> str:
+    """
+    Stable id for the *company* behind a ticker: composite FIGI, else 'CIK__<cik>', else 'NOFIGI__<TICKER>'.
+    Polygon returns no FIGI for some delisted holders (the pre-2009 General Motors Corp has only a CIK).
+    Must agree with legacy_scripts/factor_builder._holder_id.
+    """
+    if isinstance(figi, str) and figi.strip():
+        return figi.strip()
+    if cik is not None:
+        c = str(cik).strip()
+        if c and c.lower() not in ("nan", "none", "<na>"):
+            return "CIK__" + c
+    return "NOFIGI__" + str(ticker).strip().upper()
+
+
+def _ts(x) -> pd.Timestamp:
+    """Date-like -> tz-naive (UTC) midnight Timestamp, NaT if missing."""
+    if x is None or (isinstance(x, float) and pd.isna(x)) or x == "":
+        return pd.NaT
+    t = pd.to_datetime(x, utc=True, errors="coerce")
+    return pd.NaT if pd.isna(t) else t.tz_convert(None).normalize()
+
+
+SM_COLUMNS = ["ticker", "holder_id", "holder_source", "name", "active", "type",
+              "composite_figi", "share_class_figi", "cik", "locale", "currency_name", "primary_exchange", "market",
+              "list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated"]
+
+
+def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, Any]:
+    """One security-master row from a TickerDetails object. The holder window is [list_date, delisted_utc]
+    (NaT = open/unknown); anchor_date is a date the holder is known to have held the ticker (probe lookups)."""
+    figi = getattr(d, "composite_figi", None)
+    cik = getattr(d, "cik", None)
+    return {
+        "ticker": str(getattr(d, "ticker", None) or ticker).strip().upper(),
+        "holder_id": holder_id(figi, cik, ticker),
+        "holder_source": source,
+        "name": getattr(d, "name", None),
+        "active": getattr(d, "active", None),
+        "type": getattr(d, "type", None),
+        "composite_figi": figi,
+        "share_class_figi": getattr(d, "share_class_figi", None),
+        "cik": cik,
+        "locale": getattr(d, "locale", None),
+        "currency_name": getattr(d, "currency_name", None),
+        "primary_exchange": getattr(d, "primary_exchange", None),
+        "market": getattr(d, "market", None),
+        "list_date": _ts(getattr(d, "list_date", None)),
+        "delisted_utc": _ts(getattr(d, "delisted_utc", None)),
+        "effective_start": _ts(getattr(d, "list_date", None)),
+        "effective_end": _ts(getattr(d, "delisted_utc", None)),
+        "anchor_date": _ts(anchor_date),
+        "updated": _ts(getattr(d, "updated", None)),
+    }
+
+
+def _dedupe_holders(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (ticker, holder_id): descriptive fields from the 'current' row when present; windows merged
+    (earliest start, latest end, earliest anchor)."""
+    if df.empty:
+        return df
+    for c in ("list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated"):
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+    df = df.assign(_cur=(df["holder_source"] == "current").astype(int))
+    df = df.sort_values(["ticker", "holder_id", "_cur"], ascending=[True, True, False])
+    agg = {c: "first" for c in SM_COLUMNS if c not in ("ticker", "holder_id", "effective_start", "effective_end", "anchor_date")}
+    agg.update(effective_start="min", effective_end="max", anchor_date="min")
+    out = df.groupby(["ticker", "holder_id"], as_index=False).agg(agg)
+    return out[SM_COLUMNS].sort_values(["ticker", "holder_source"]).reset_index(drop=True)
+
+
 # --------------------------
 # Security Master (details)
 # --------------------------
@@ -131,12 +202,20 @@ def pull_security_master(
     api_key_file: Optional[str | Path] = None,
     fail_on_missing: bool = False,
     missing_out: Optional[str | Path] = None,
+    probe_dates: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """
-    For each ticker call GET /v3/reference/tickers/{ticker} and persist a compact frame.
+    Security master: one row per (ticker, holder), where a holder is the company behind the ticker.
+
+    GET /v3/reference/tickers/{ticker} gives the *current* holder (FIGI, CIK, list_date, ...). For each date in
+    `probe_dates` the same endpoint is queried with ?date=, which returns whoever held the ticker on that date;
+    a different company (different FIGI/CIK) is added as a previous holder with anchor_date = the probe date.
+    That is how recycled tickers (old GM until 2009, new GM from 2010-11-18) get separate ids downstream.
+    Costs one extra request per ticker per probe date.
     """
     key = load_api_key(api_key, api_key_file)
     cli = _client(key)
+    probe_dates = [str(x) for x in (probe_dates or [])]
 
     rows: List[Dict[str, Any]] = []
     missing: List[str] = []
@@ -144,21 +223,7 @@ def pull_security_master(
     for t in tqdm(_to_upper_list(tickers), desc="security master"):
         try:
             d = _retrying_call(cli.get_ticker_details, t)
-            rows.append(
-                {
-                    "ticker": getattr(d, "ticker", t),
-                    "name": getattr(d, "name", None),
-                    "active": getattr(d, "active", None),
-                    "cik": getattr(d, "cik", None),
-                    "locale": getattr(d, "locale", None),
-                    "currency_name": getattr(d, "currency_name", None),
-                    "primary_exchange": getattr(d, "primary_exchange", None),
-                    "market": getattr(d, "market", None),
-                    "type": getattr(d, "type", None),
-                    "list_date": pd.to_datetime(getattr(d, "list_date", None)),
-                    "updated": pd.to_datetime(getattr(d, "updated", None)),
-                }
-            )
+            rows.append(_details_row(d, t, source="current"))
         except BadResponse as e:
             missing.append(t)
             print(f"[warn] security master {t}: {str(e)[:200]}", file=sys.stderr)
@@ -170,7 +235,27 @@ def pull_security_master(
             if fail_on_missing:
                 raise
 
-    df = pd.DataFrame(rows).sort_values("ticker").reset_index(drop=True)
+        for pdate in probe_dates:
+            try:
+                d = _retrying_call(cli.get_ticker_details, t, date=pdate)
+            except BadResponse as e:
+                if "Ticker not found" in str(e) or '"status":"NOT_FOUND"' in str(e):
+                    continue   # nobody held this ticker on that date
+                print(f"[warn] security master {t}@{pdate}: {str(e)[:200]}", file=sys.stderr)
+                continue
+            except Exception as e:
+                print(f"[warn] security master {t}@{pdate}: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+                continue
+            row = _details_row(d, t, source=f"probe:{pdate}", anchor_date=pdate)
+            if row["holder_id"].startswith("NOFIGI__"):
+                # No FIGI and no CIK: cannot tell this holder apart from the current one, and a phantom second
+                # holder would split the ticker's history downstream. Skip it.
+                print(f"[warn] security master {t}@{pdate}: holder has neither FIGI nor CIK ({row['name']!r}); ignored",
+                      file=sys.stderr)
+                continue
+            rows.append(row)
+
+    df = _dedupe_holders(pd.DataFrame(rows, columns=SM_COLUMNS))
     out_parquet = Path(out_parquet)
     out_parquet.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_parquet, index=False)
@@ -286,8 +371,20 @@ def pull_splits(
 
 
 # --------------------------
-# Ticker Events (placeholder)
+# Ticker events (symbol history per holder)
 # --------------------------
+EVENT_COLUMNS = ["query_ticker", "holder_id", "composite_figi", "cik", "name", "event_type", "date", "ticker"]
+
+
+def _event_field(e, *path):
+    cur = e
+    for k in path:
+        cur = cur.get(k) if isinstance(cur, dict) else getattr(cur, k, None)
+        if cur is None:
+            return None
+    return cur
+
+
 def pull_ticker_events(
     tickers: Iterable[str],
     *,
@@ -296,11 +393,86 @@ def pull_ticker_events(
     api_key_file: Optional[str | Path] = None,
 ) -> pd.DataFrame:
     """
-    Placeholder for any additional per-ticker "events" you may want to pull later.
-    For now, produce an empty parquet so downstream steps don't fail.
+    GET /vX/reference/tickers/{ticker}/events for each ticker: the symbol history of the company currently
+    behind it, e.g. META -> [FB from 2012-05-18, META from 2022-06-09]. One request per ticker.
+    Rows: query_ticker, holder_id, composite_figi, cik, name, event_type, date, ticker (the symbol adopted).
     """
-    df = pd.DataFrame(columns=["ticker", "event_type", "published_utc", "title", "url"])
+    key = load_api_key(api_key, api_key_file)
+    cli = _client(key)
+
+    rows: List[Dict[str, Any]] = []
+    failed: List[tuple] = []
+    for t in tqdm(_to_upper_list(tickers), desc="ticker events"):
+        try:
+            r = _retrying_call(cli.get_ticker_events, t)
+        except BadResponse as e:
+            if "Ticker not found" in str(e) or '"status":"NOT_FOUND"' in str(e) or "No events found" in str(e):
+                failed.append((t, "NOT_FOUND"))
+                continue
+            raise
+        except Exception as e:
+            failed.append((t, f"{type(e).__name__}: {e}"))
+            continue
+        figi, cik, name = getattr(r, "composite_figi", None), getattr(r, "cik", None), getattr(r, "name", None)
+        for e in (getattr(r, "events", None) or []):
+            new_t = _event_field(e, "ticker_change", "ticker")
+            rows.append({
+                "query_ticker": t,
+                "holder_id": holder_id(figi, cik, t),
+                "composite_figi": figi, "cik": cik, "name": name,
+                "event_type": _event_field(e, "type"),
+                "date": _ts(_event_field(e, "date")),
+                "ticker": str(new_t).strip().upper() if new_t else None,
+            })
+
     out_parquet = Path(out_parquet)
     out_parquet.parent.mkdir(parents=True, exist_ok=True)
+    _write_failures(out_parquet.parent / "_events_failed_tickers.txt", failed, what="ticker events")
+    df = pd.DataFrame(rows, columns=EVENT_COLUMNS)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values(["holder_id", "date"]).reset_index(drop=True)
     df.to_parquet(out_parquet, index=False)
     return df
+
+
+def symbol_history(events: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per holder, the symbols it traded under with [start, end] windows (end = the day before the next change,
+    NaT = still current). A company's rows under a former symbol (FB before META) are only stitched into its
+    series if that former symbol is also in the ingest watchlist.
+    """
+    cols = ["holder_id", "ticker", "start", "end"]
+    if events.empty:
+        return pd.DataFrame(columns=cols)
+    e = events[(events["event_type"] == "ticker_change")].dropna(subset=["date", "ticker"]).copy()
+    if e.empty:
+        return pd.DataFrame(columns=cols)
+    e["date"] = pd.to_datetime(e["date"])
+    e = e.sort_values(["holder_id", "date"]).drop_duplicates(["holder_id", "date", "ticker"])
+    e["start"] = e["date"]
+    e["end"] = e.groupby("holder_id")["date"].shift(-1) - pd.Timedelta(days=1)
+    return e[cols].reset_index(drop=True)
+
+
+def refine_windows(sm: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Tighten each security-master row's [effective_start, effective_end] to when that holder actually used
+    that ticker, from the ticker-change history. Only matters for recycled tickers whose new holder came in
+    via a rename (its list_date predates the symbol); single-holder tickers ignore windows downstream.
+    """
+    if sm.empty or history.empty:
+        return sm
+    h = history.copy()
+    h["start"] = pd.to_datetime(h["start"]); h["end"] = pd.to_datetime(h["end"])
+    agg = h.groupby(["holder_id", "ticker"], as_index=False).agg(start=("start", "min"), end=("end", "max"),
+                                                                 open=("end", lambda x: bool(x.isna().any())))
+    agg.loc[agg["open"], "end"] = pd.NaT
+    out = sm.copy()
+    out["effective_start"] = pd.to_datetime(out["effective_start"], errors="coerce")
+    out["effective_end"] = pd.to_datetime(out["effective_end"], errors="coerce")
+    out = out.merge(agg[["holder_id", "ticker", "start", "end"]], on=["holder_id", "ticker"], how="left")
+    hs = out["start"].notna()
+    out.loc[hs, "effective_start"] = out.loc[hs, ["effective_start", "start"]].max(axis=1)
+    he = out["end"].notna()
+    out.loc[he, "effective_end"] = out.loc[he, ["effective_end", "end"]].min(axis=1)
+    return out.drop(columns=["start", "end"])

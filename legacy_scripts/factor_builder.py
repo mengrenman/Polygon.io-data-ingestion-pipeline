@@ -169,39 +169,152 @@ def _read_prices(path: Path,
 # ID stitching & event-day key (batch)
 # =============================================================
 
+# =============================================================
+# Holder ids: the company behind a ticker on a date (FIGI -> CIK -> ticker)
+# =============================================================
+
+def _holder_id(figi, cik, ticker) -> str:
+    """
+    Stable id for the *company* behind a ticker row: composite FIGI, else 'CIK__<cik>', else 'NOFIGI__<TICKER>'.
+    Polygon returns no FIGI for some delisted holders (the pre-2009 General Motors Corp has only a CIK).
+    """
+    if isinstance(figi, str) and figi.strip():
+        return figi.strip()
+    if cik is not None and not (isinstance(cik, float) and np.isnan(cik)):
+        c = str(cik).strip()
+        if c and c.lower() not in ("nan", "none", "<na>"):
+            return "CIK__" + c
+    return "NOFIGI__" + str(ticker).strip().upper()
+
+
+def _naive_dates(x: pd.Series) -> pd.Series:
+    """Any date-like column -> tz-naive (UTC) midnight, ns resolution."""
+    d = pd.to_datetime(x, errors="coerce", utc=True)
+    return d.dt.tz_convert(None).dt.normalize().dt.as_unit("ns")
+
+
+def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
+    """
+    Security master -> one row per (ticker, holder_id) with the holder's window [effective_start, effective_end]
+    (NaT = open/unknown) and an optional anchor_date (a date on which the holder is known to have held the ticker,
+    from a `--probe-dates` lookup). Accepts the old puller output (no holder_id / FIGI columns) as well.
+    """
+    s = sm.copy()
+    s["ticker"] = s["ticker"].astype(str).str.strip().str.upper()
+    for c in ("composite_figi", "cik", "holder_id"):
+        if c not in s.columns:
+            s[c] = pd.NA
+    for c in ("effective_start", "effective_end", "anchor_date"):
+        s[c] = _naive_dates(s[c]) if c in s.columns else pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    hid = s["holder_id"].astype("string")
+    need = (hid.isna() | (hid.str.strip() == "")).to_numpy()
+    s.loc[need, "holder_id"] = [_holder_id(f, k, t) for f, k, t in
+                                zip(s.loc[need, "composite_figi"], s.loc[need, "cik"], s.loc[need, "ticker"])]
+    s["holder_id"] = s["holder_id"].astype(str)
+    if s.empty:
+        return s[["ticker", "holder_id", "effective_start", "effective_end", "anchor_date"]]
+    return s.groupby(["ticker", "holder_id"], as_index=False).agg(
+        effective_start=("effective_start", "min"),
+        effective_end=("effective_end", "max"),
+        anchor_date=("anchor_date", "min"),
+    )
+
+
+def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.Series:
+    """
+    Holder id for each row of `df` (needs 'ticker' and `date_col`), from the security master.
+
+    - ticker unknown to the SM             -> 'NOFIGI__<TICKER>'
+    - one holder (one distinct id)         -> that id for every row, whatever the date. Windows only ever
+      disambiguate between holders, so an imprecise list_date can never split one company's history into two
+      ids (each id anchors its adjustment factors to its own last day, so a spurious split breaks continuity).
+    - several holders (a recycled ticker)  -> the holder whose bounded window contains the date; a holder with
+      no known dates (found by probing a date) takes what bounded holders don't claim; else the nearest window.
+      Ties: the later effective_start.
+    """
+    smn = _normalize_sm(sm)
+    t = pd.DataFrame({
+        "ticker": df["ticker"].astype(str).str.strip().str.upper().to_numpy(),
+        "_d": _naive_dates(df[date_col]).to_numpy(),
+        "_row": np.arange(len(df)),
+    })
+    out = np.array(["NOFIGI__" + x for x in t["ticker"]], dtype=object)
+    if smn.empty or t.empty:
+        return pd.Series(out, index=df.index, dtype=object)
+
+    n_holders = smn.groupby("ticker")["holder_id"].nunique()
+    single = smn[smn["ticker"].map(n_holders) == 1][["ticker", "holder_id"]]
+    m1 = t.merge(single, on="ticker", how="left")
+    has = m1["holder_id"].notna().to_numpy()
+    out[has] = m1.loc[has, "holder_id"].to_numpy()
+
+    multi = set(n_holders[n_holders > 1].index)
+    tm = t[t["ticker"].isin(multi)]
+    if len(tm):
+        c = tm.merge(smn[smn["ticker"].isin(multi)], on="ticker", how="inner")
+        d, st, en = c["_d"], c["effective_start"], c["effective_end"]
+        bounded = st.notna() | en.notna()
+        inwin = (st.isna() | (d >= st)) & (en.isna() | (d <= en))
+        rank = np.where(bounded & inwin, 0, np.where(~bounded, 1, 2))
+        dist_bound = pd.concat([(d - st).abs(), (d - en).abs()], axis=1).min(axis=1).dt.days
+        dist_anchor = (d - c["anchor_date"]).abs().dt.days.fillna(10**6)
+        c["_rank"] = rank
+        c["_dist"] = np.where(rank == 2, dist_bound, np.where(rank == 1, dist_anchor, 0.0))
+        c = c.sort_values(["_row", "_rank", "_dist", "effective_start"],
+                          ascending=[True, True, True, False], na_position="last")
+        best = c.drop_duplicates("_row", keep="first")
+        out[best["_row"].to_numpy()] = best["holder_id"].to_numpy()
+    return pd.Series(out, index=df.index, dtype=object)
+
+
+def _assign_event_ids(events: pd.DataFrame, sm: pd.DataFrame, date_cols) -> pd.DataFrame:
+    """
+    Add 'holder_id' to a splits/dividends table by (ticker, event date), so corporate actions are keyed
+    exactly like price rows (Polygon's splits/dividends endpoints carry a ticker but no FIGI).
+    """
+    e = events.copy()
+    if "ticker" not in e.columns and "T" in e.columns:
+        e = e.rename(columns={"T": "ticker"})
+    if e.empty:
+        e["holder_id"] = pd.Series(dtype=object)
+        return e
+    dcol = next((c for c in date_cols if c in e.columns), None)
+    if dcol is None:
+        raise ValueError(f"events table has none of the date columns {list(date_cols)}")
+    e["ticker"] = e["ticker"].astype(str).str.strip().str.upper()
+    e["holder_id"] = _assign_holder_ids(e, sm, dcol)
+    return e
+
+
+def _event_ids(df: pd.DataFrame) -> np.ndarray:
+    """event_id = holder_id (from _assign_event_ids) -> composite_figi -> 'NOFIGI__<TICKER>'."""
+    hid = df["holder_id"] if "holder_id" in df.columns else pd.Series(pd.NA, index=df.index)
+    figi = df["composite_figi"] if "composite_figi" in df.columns else pd.Series(pd.NA, index=df.index)
+    nofigi = ("NOFIGI__" + df["ticker"].astype(str)).to_numpy()
+    return np.where(hid.notna().to_numpy(), hid.astype(str).to_numpy(),
+                    np.where(figi.notna().to_numpy(), figi.astype(str).to_numpy(), nofigi))
+
+
+def _events_for_holder(table: pd.DataFrame, gid: str, ticker: str, date_col: str, cols: List[str]) -> pd.DataFrame:
+    """
+    Events keyed to this holder. Only an id without FIGI/CIK ('NOFIGI__') may fall back to ticker-keyed
+    events: for a real holder an empty result means the company had none, and borrowing the ticker's events
+    would apply another company's splits/dividends to its prices.
+    """
+    ev = table[table["event_id"] == gid][cols].dropna()
+    if ev.empty and str(gid).startswith("NOFIGI__"):
+        ev = table[table["ticker"] == ticker][cols].dropna()
+    return ev.sort_values(date_col)
+
+
 def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame) -> pd.DataFrame:
-    sm = security_master.copy()
-    sm["ticker"] = sm["ticker"].astype(str).str.strip().str.upper()
-    if "composite_figi" not in sm.columns:
-        sm["composite_figi"] = pd.NA
-
-    # NEW: provide defaults if these columns are missing
-    if "effective_start" not in sm.columns:
-        sm["effective_start"] = pd.NaT
-    if "effective_end" not in sm.columns:
-        sm["effective_end"] = pd.NaT
-        
-    sm["effective_start"] = pd.to_datetime(sm["effective_start"])
-    sm["effective_end"]   = pd.to_datetime(sm["effective_end"])
-
+    """Attach the holder id per price row; never drops rows (out-of-window rows go to the nearest holder)."""
     prx = prx.copy()
     prx["ticker"] = prx["ticker"].astype(str).str.strip().str.upper()
     prx["datetime"] = _to_naive_utc(prx["datetime"])   # tz-naive UTC
     prx["event_day"] = _trading_day(prx["datetime"])    # US/Eastern trading date
-
-    m = prx.merge(
-        sm[["composite_figi", "ticker", "effective_start", "effective_end"]],
-        on="ticker", how="left"
-    )
-    inwin = (m["event_day"] >= m["effective_start"]) & (
-        m["effective_end"].isna() | (m["event_day"] <= m["effective_end"])
-    )
-    m = m[inwin | m["effective_start"].isna()]
-    m = (m.sort_values(["ticker", "datetime", "effective_start"])
-           .drop_duplicates(["ticker", "datetime"], keep="last"))
-
-    m["id"] = m["composite_figi"].fillna("NOFIGI__" + m["ticker"])
-    return m.drop(columns=["effective_start", "effective_end"])
+    prx["id"] = _assign_holder_ids(prx, security_master, "event_day")
+    return prx
 
 
 # =============================================================
@@ -229,7 +342,7 @@ def _prep_splits(splits: pd.DataFrame) -> pd.DataFrame:
     if "composite_figi" not in s.columns:
         s["composite_figi"] = pd.NA
 
-    s["event_id"] = np.where(s["composite_figi"].notna(), s["composite_figi"], "NOFIGI__" + s["ticker"])
+    s["event_id"] = _event_ids(s)
     return s[["execution_date", "ratio", "ticker", "composite_figi", "event_id"]]
 
 def _prep_dividends(dividends: pd.DataFrame) -> pd.DataFrame:
@@ -251,7 +364,7 @@ def _prep_dividends(dividends: pd.DataFrame) -> pd.DataFrame:
     if "composite_figi" not in d.columns:
         d["composite_figi"] = pd.NA
 
-    d["event_id"] = np.where(d["composite_figi"].notna(), d["composite_figi"], "NOFIGI__" + d["ticker"])
+    d["event_id"] = _event_ids(d)
     return d[["ex_date", "amount", "ticker", "composite_figi", "event_id"]]
 
 
@@ -270,7 +383,7 @@ def _split_factors_for_id_worker(payload: Tuple[str, pd.DataFrame]) -> Tuple[pd.
 
     ev = s[s["event_id"] == gid][["execution_date", "ratio"]].dropna()
     used_fallback = False
-    if ev.empty:
+    if ev.empty and str(gid).startswith("NOFIGI__"):   # a real holder with no events gets none (see _events_for_holder)
         ev = s[s["ticker"] == tick][["execution_date", "ratio"]].dropna()
         used_fallback = True
     ev = ev.sort_values("execution_date")
@@ -338,7 +451,7 @@ def _dividend_factors_for_id_worker(payload: Tuple[str, pd.DataFrame, bool]) -> 
 
     ev = d[d["event_id"] == gid][["ex_date", "amount"]].dropna()
     used_fallback = False
-    if ev.empty:
+    if ev.empty and str(gid).startswith("NOFIGI__"):   # a real holder with no events gets none (see _events_for_holder)
         ev = d[d["ticker"] == tick][["ex_date", "amount"]].dropna()
         used_fallback = True
     ev = ev.sort_values("ex_date")
@@ -711,41 +824,12 @@ def _iter_minute_day_files(root: Path, tickers: Optional[List[str]]) -> List[Tup
 
 
 def _attach_id_days(days: pd.DataFrame, sm: pd.DataFrame) -> pd.DataFrame:
-    """Attach an id per (ticker, event_day, path); never drop out-of-window days; fallback to NOFIGI__<TICKER>."""
-    sm = sm.copy()
-    sm["ticker"] = sm["ticker"].astype(str).str.strip().str.upper()
-    if "composite_figi" not in sm.columns:
-        sm["composite_figi"] = pd.NA
-    # pull_security_master() does not emit an effective window; default like the batch path does
-    if "effective_start" not in sm.columns:
-        sm["effective_start"] = pd.NaT
-    if "effective_end" not in sm.columns:
-        sm["effective_end"] = pd.NaT
-    sm["effective_start"] = pd.to_datetime(sm["effective_start"], errors="coerce")
-    sm["effective_end"]   = pd.to_datetime(sm["effective_end"], errors="coerce")
-
+    """Attach the holder id per (ticker, event_day, path) minute day-file; never drops days."""
     d = days.copy()
     d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+    d["id"] = _assign_holder_ids(d, sm, "event_day")
+    return d[["ticker", "event_day", "id", "path"]]
 
-    m = d.merge(
-        sm[["ticker","composite_figi","effective_start","effective_end"]],
-        on="ticker", how="left"
-    )
-
-    m["in_window"] = (
-        (m["effective_start"].notna()) &
-        (m["event_day"] >= m["effective_start"]) &
-        (m["effective_end"].isna() | (m["event_day"] <= m["effective_end"]))
-    )
-
-    m["_rank"] = np.where(m["in_window"], 1, 2)
-    m = (m.sort_values(["ticker","event_day","_rank","effective_start"])
-           .drop_duplicates(["ticker","event_day","path"], keep="last"))
-
-    m["id"] = m["composite_figi"]
-    m["id"] = m["id"].where(m["id"].notna(), "NOFIGI__" + m["ticker"])
-
-    return m[["ticker","event_day","id","path"]]
 
 def _read_first_last_close(path: Path, ticker: Optional[str]) -> Tuple[float, float]:
     """Return (first_close, last_close) for the specific ticker in a minute day-file; supports multi-ticker files."""
@@ -807,16 +891,16 @@ def _build_split_factors_from_days(id_days: pd.DataFrame,
         E = edges.copy()
         E["ticker"] = E["ticker"].astype(str).str.strip().str.upper()
 
-    for tkr, g in tqdm(id_days.groupby("ticker"), desc="Split factors per ticker (days)"):
+    # One holder (company) at a time: a recycled ticker's previous company must not receive the
+    # current company's splits, and each holder anchors its own factors.
+    for (tkr, gid), g in tqdm(id_days.groupby(["ticker", "id"]), desc="Split factors per holder (days)"):
         # IMPORTANT: reset_index to avoid index misalignment later
         days = (g[["event_day"]]
                 .drop_duplicates()
                 .sort_values("event_day")
                 .reset_index(drop=True))
 
-        ev = (s[s["ticker"] == tkr][["execution_date","ratio"]]
-                .dropna()
-                .sort_values("execution_date"))
+        ev = _events_for_holder(s, gid, tkr, "execution_date", ["execution_date", "ratio"])
 
         if ev.empty:
             per_day = pd.DataFrame({"event_day": [], "ratio": []})
@@ -830,7 +914,7 @@ def _build_split_factors_from_days(id_days: pd.DataFrame,
 
         # Optional raw-gap detection/override
         if detect_gaps and E is not None:
-            e_t = E[E["ticker"] == tkr].dropna(subset=["raw_gap"])
+            e_t = E[(E["ticker"] == tkr) & E["event_day"].isin(days["event_day"])].dropna(subset=["raw_gap"])
             if not e_t.empty:
                 def _guess(gap: float) -> Optional[float]:
                     if not np.isfinite(gap) or gap <= 0: return None
@@ -908,26 +992,26 @@ def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
     d = d.rename(columns={ex:"ex_date", amt:"amount"})
     d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize().dt.as_unit("ns")
     d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
-    d["event_id"] = np.where(d["composite_figi"].notna(), d["composite_figi"], "NOFIGI__"+d["ticker"])
+    d["event_id"] = _event_ids(d)
     return d[["ex_date","amount","ticker","event_id"]]
 
 def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     d = _prep_divs_for_stream(div)
     out = []
-    cal = id_days[["ticker","event_day"]].drop_duplicates().sort_values(["ticker","event_day"])
+    cal = id_days[["ticker","id","event_day"]].drop_duplicates().sort_values(["ticker","id","event_day"])
 
     b = base.merge(id_days[["ticker","id","event_day"]].drop_duplicates(),
                    on=["id","event_day"], how="left")
-    b = b.sort_values(["ticker","event_day"])
-    b["prior_base"] = b.groupby("ticker")["base"].shift(1)
+    b = b.sort_values(["id","event_day"])
+    b["prior_base"] = b.groupby("id")["base"].shift(1)   # per holder: never carry a base across companies
     if "spf" not in b.columns:
         b["spf"] = 1.0
 
-    for tkr, g in tqdm(cal.groupby("ticker"), desc="Dividend factors per ticker (days)"):
+    for (tkr, gid), g in tqdm(cal.groupby(["ticker", "id"]), desc="Dividend factors per holder (days)"):
         # IMPORTANT: reset_index here too
         days = g[["event_day"]].copy().reset_index(drop=True)
-        prb  = b[b["ticker"]==tkr][["event_day","prior_base","spf"]]
-        ev = d[d["ticker"] == tkr][["ex_date","amount"]].dropna().sort_values("ex_date")
+        prb  = b[(b["ticker"] == tkr) & (b["id"] == gid)][["event_day","prior_base","spf"]]
+        ev = _events_for_holder(d, gid, tkr, "ex_date", ["ex_date", "amount"])
 
         if ev.empty:
             tmp = days.copy()
@@ -1127,6 +1211,9 @@ def main():
     sm  = pd.read_parquet(args.refdir / "security_master.parquet")
     spl = pd.read_parquet(args.refdir / "stock_splits.parquet")
     div = pd.read_parquet(args.refdir / "cash_dividends.parquet")
+    # Key corporate actions by the company holding the ticker on the event date, exactly like price rows.
+    spl = _assign_event_ids(spl, sm, ["execution_date"])
+    div = _assign_event_ids(div, sm, ["ex_date", "ex_dividend_date"])
 
     # Streaming path for huge MINUTE lakes
     if args.granularity == "minute" and args.minute_stream:
