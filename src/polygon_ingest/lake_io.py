@@ -104,6 +104,29 @@ def _list_files_minute(root: Path, tickers: Iterable[str], s: dt.date, e: dt.dat
                 files.extend(Path(p) for p in glob.glob(str(ddir / "*.parquet")))
     return files
 
+# ───────────────────────── layouts ───────────────────────────────────────────
+def detect_layout(root: str | Path) -> Literal["ticker", "market"]:
+    """'market' if the lake root holds <YYYY>/ directories (all tickers per file), else 'ticker' (<TICKER>/ dirs)."""
+    root = Path(root)
+    if root.is_dir():
+        for p in root.iterdir():
+            if p.is_dir() and len(p.name) == 4 and p.name.isdigit():
+                return "market"
+    return "ticker"
+
+def _list_files_day_market(root: Path, s: dt.date, e: dt.date) -> List[Path]:
+    """Market layout, day: <root>/<YYYY>/<MM>.parquet (all tickers)."""
+    return [f for yy, mm in _month_range(s, e) if (f := root / f"{yy:04d}" / f"{mm:02d}.parquet").exists()]
+
+def _list_files_minute_market(root: Path, s: dt.date, e: dt.date) -> List[Path]:
+    """Market layout, minute: <root>/<YYYY>/<MM>/<DD>.parquet (all tickers)."""
+    files: List[Path] = []
+    for yy, mm in _month_range(s, e):
+        ddir = root / f"{yy:04d}" / f"{mm:02d}"
+        if ddir.exists():
+            files.extend(Path(p) for p in glob.glob(str(ddir / "*.parquet")))
+    return [f for f in files if s <= dt.date(int(f.parent.parent.name), int(f.parent.name), int(f.stem)) <= e]
+
 # ───────────────────────── manifest-aware selection ──────────────────────────
 def _safe_parse_ts(x: Any, source_tz: str) -> pd.Timestamp:
     """Parse timestamps from manifest (stringified pandas timestamps)."""
@@ -157,15 +180,20 @@ def select_lake_files(
     manifest_fallback: bool = True,
     source_tz: str = "US/Eastern",
     debug: bool = False,
+    layout: Literal["auto", "ticker", "market"] = "auto",
 ) -> List[Path]:
     """
     Choose the parquet files to read, optionally using a manifest for speed.
+    layout 'auto' detects <TICKER>/ vs <YYYY>/ directories; market-layout files hold all tickers, so the
+    caller filters rows by ticker (load_polygonio_lake pushes a parquet filter).
 
     Returns: list[Path]
     """
     # Normalize inputs
     tickers = [str(t).upper() for t in tickers]
     root = Path(root)
+    if layout == "auto":
+        layout = detect_layout(root)
 
     s = pd.to_datetime(start_date)
     e = pd.to_datetime(end_date)
@@ -185,7 +213,7 @@ def select_lake_files(
             mpath = Path(manifest)
             if not mpath.exists():
                 raise FileNotFoundError(str(mpath))
-            files = _select_from_manifest(mpath, tickers, s, e, source_tz=source_tz)
+            files = _select_from_manifest(mpath, ["__market__"] if layout == "market" else tickers, s, e, source_tz=source_tz)
             used_manifest = True
             if debug:
                 print(f"[DEBUG] Manifest {mpath} → {len(files)} files")
@@ -197,11 +225,15 @@ def select_lake_files(
 
     # Fallback walk
     if not files:
-        files = (
-            _list_files_minute(root, tickers, s.date(), e.date())
-            if granularity == "minute"
-            else _list_files_day(root, tickers, s.date(), e.date())
-        )
+        if layout == "market":
+            files = (_list_files_minute_market(root, s.date(), e.date()) if granularity == "minute"
+                     else _list_files_day_market(root, s.date(), e.date()))
+        else:
+            files = (
+                _list_files_minute(root, tickers, s.date(), e.date())
+                if granularity == "minute"
+                else _list_files_day(root, tickers, s.date(), e.date())
+            )
         if debug:
             how = "FS walk" if not used_manifest else "Manifest empty → FS walk"
             print(f"[DEBUG] {how} (granularity={granularity}) → {len(files)} files")
@@ -209,8 +241,8 @@ def select_lake_files(
     return files
 
 # ───────────────────────── parquet read helper ───────────────────────────────
-def _read_parquet(path: Path, columns: Optional[List[str]]) -> pd.DataFrame:
-    return pd.read_parquet(path, columns=columns)
+def _read_parquet(path: Path, columns: Optional[List[str]], filters=None) -> pd.DataFrame:
+    return pd.read_parquet(path, columns=columns, filters=filters)
 
 # ───────────────────────── public loader ─────────────────────────────────────
 def load_polygonio_lake(
@@ -231,9 +263,11 @@ def load_polygonio_lake(
     manifest: Optional[str | Path] = None,
     manifest_fallback: bool = True,
     show_progress: bool = False,
+    layout: Literal["auto", "ticker", "market"] = "auto",
 ) -> pd.DataFrame:
     """
     Load Polygon parquet lake into one DataFrame filtered to [start_date, end_date].
+    Works on both layouts; for a market layout (all tickers per file) a parquet filter on `ticker` prunes on read.
 
     - If `manifest` is given, selects files via manifest; otherwise walks the lake.
     - `show_progress` controls tqdm bars (default False for import-friendly usage).
@@ -257,13 +291,17 @@ def load_polygonio_lake(
         read_cols = list(dict.fromkeys(list(columns) + list(need)))
 
     # Choose files
+    if layout == "auto":
+        layout = detect_layout(root)
+    filters = [("ticker", "in", list(dict.fromkeys(tickers)))] if layout == "market" else None
     files = select_lake_files(
         tickers, start_date, end_date, root,
         granularity=granularity,
         manifest=manifest,
         manifest_fallback=manifest_fallback,
         source_tz=source_tz,
-        debug=debug
+        debug=debug,
+        layout=layout,
     )
 
     if not files:
@@ -277,7 +315,7 @@ def load_polygonio_lake(
     if debug and not show_progress:
         for f in files:
             try:
-                dfs.append(_read_parquet(f, read_cols))
+                dfs.append(_read_parquet(f, read_cols, filters))
             except Exception as ex:
                 print(f"[DEBUG] Failed to read {f}: {ex}")
     else:
@@ -286,7 +324,7 @@ def load_polygonio_lake(
         progress_ctx = tqdm(total=len(files), desc="Loading Parquet", unit="file") if show_progress else None
         try:
             with Exec(max_workers=max_workers) as ex:
-                futs = {ex.submit(_read_parquet, f, read_cols): f for f in files}
+                futs = {ex.submit(_read_parquet, f, read_cols, filters): f for f in files}
                 for fut in as_completed(futs):
                     f = futs[fut]
                     try:
@@ -432,10 +470,15 @@ if "load_series" not in globals() or "load_events" not in globals():
     ]
 
     def _collect_paths(root: _Path, tf: str, ticker: str):
-        base = _Path(root) / str(ticker).upper()
-        if not base.exists():
-            return []
-        return sorted(base.glob("*/*/*.parquet")) if tf == "minute" else sorted(base.glob("*/*.parquet"))
+        """(paths, ticker_filter): per-ticker layout -> that ticker's files, no filter;
+        market layout (<root>/<YYYY>/...) -> all files, filter rows to the ticker on read."""
+        root = _Path(root)
+        base = root / str(ticker).upper()
+        if base.exists():
+            return (sorted(base.glob("*/*/*.parquet")) if tf == "minute" else sorted(base.glob("*/*.parquet"))), None
+        if root.is_dir() and any(p.is_dir() and len(p.name) == 4 and p.name.isdigit() for p in root.iterdir()):
+            return (sorted(root.glob("*/*/*.parquet")) if tf == "minute" else sorted(root.glob("*/*.parquet"))), str(ticker).upper()
+        return [], None
 
     def _file_cols(path: _Path) -> set[str]:
         try:
@@ -443,8 +486,9 @@ if "load_series" not in globals() or "load_events" not in globals():
         except Exception:
             return set()
 
-    def _read_subset(paths: list[_Path]) -> _pd.DataFrame:
-        """Read a set of parquet files, accept datetime OR date/timestamp, and return a frame with a tz-aware 'datetime'."""
+    def _read_subset(paths: list[_Path], ticker_filter: str | None = None) -> _pd.DataFrame:
+        """Read a set of parquet files, accept datetime OR date/timestamp, and return a frame with a tz-aware 'datetime'.
+        ticker_filter (market layout) prunes rows to one symbol on read."""
         want = set(_DESIRED_COLS)
         dfs: list[_pd.DataFrame] = []
         for p in paths:
@@ -452,7 +496,7 @@ if "load_series" not in globals() or "load_events" not in globals():
             cols = list(cols_avail & want)
             if not cols:
                 continue
-            df = _pd.read_parquet(p, columns=cols)
+            df = _pd.read_parquet(p, columns=cols, filters=[("ticker", "==", ticker_filter)] if ticker_filter else None)
 
             # harmonize to a single 'datetime' column (UTC-aware)
             if "datetime" in df.columns:
@@ -480,8 +524,8 @@ if "load_series" not in globals() or "load_events" not in globals():
         base_cols = ["datetime","ticker","open","high","low","close","volume","vwap"]
         adj_cols  = ["open_sa","high_sa","low_sa","close_sa","vwap_sa","volume_sa","close_tr"]
 
-        df_un = _read_subset(_collect_paths(unadj_root, tf, ticker))
-        df_ad = _read_subset(_collect_paths(adj_root,   tf, ticker))
+        df_un = _read_subset(*_collect_paths(unadj_root, tf, ticker))
+        df_ad = _read_subset(*_collect_paths(adj_root,   tf, ticker))
 
         # nothing to do?
         if df_un.empty and df_ad.empty:

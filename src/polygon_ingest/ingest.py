@@ -70,6 +70,7 @@ DATE_RE       = re.compile(r"(?P<y>\d{4})[^\d]?(?P<m>\d{2})(?:[^\d]?(?P<d>\d{2})
 LOCAL_TZ      = "US/Eastern"
 
 Tf = Literal["minute", "day"]
+Layout = Literal["ticker", "market"]   # ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>]; market: <out>/<YYYY>/<MM>[/<DD>] all tickers
 
 # ── globals for inherited/IPC state ───────────────────────────────────────────
 PROG_COUNTER = None   # set in pool initializer (for progress)
@@ -177,6 +178,73 @@ def to_datetime_utc(series: pd.Series) -> pd.Series:
     else:                                     unit = "s"
     return pd.to_datetime(s, unit=unit, utc=True)
 
+# ── layouts, bounded-memory flushing ──────────────────────────────────────────
+def source_period(p: Path, tf: Tf) -> Tuple[int, ...]:
+    """(y, m) for day, (y, m, d) for minute, from the source file's YYYY/MM dirs and YYYY-MM-DD name."""
+    y, m = parse_year_month_from_path(p)
+    if tf == "day":
+        return (y, m)
+    mm = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})", p.stem)
+    if mm and int(mm.group(1)) == y and int(mm.group(2)) == m:
+        return (y, m, int(mm.group(3)))
+    return (y, m, 1)   # day unknown: conservative (flushes later, never earlier)
+
+
+def _flushable(bucket_keys: List[tuple], cur: Tuple[int, ...], tf: Tf) -> List[tuple]:
+    """
+    Bucket keys that can no longer receive rows and can be written now. Bucket keys end in (yr, mo[, dd]).
+    Rows from a source file land on that file's ET trading date or, at most, an adjacent calendar day, so
+    once the worker is processing month M, months <= M-2 are final (day); once it is processing date D,
+    dates < D-1 are final (minute). This bounds a worker's memory to about two periods instead of all of them.
+    """
+    out: List[tuple] = []
+    if tf == "day":
+        cur_idx = cur[0] * 12 + cur[1]
+        for k in bucket_keys:
+            if k[-2] * 12 + k[-1] <= cur_idx - 2:
+                out.append(k)
+    else:
+        import datetime as _dt
+        cur_d = _dt.date(cur[0], cur[1], cur[2])
+        for k in bucket_keys:
+            if _dt.date(k[-3], k[-2], k[-1]) < cur_d - _dt.timedelta(days=1):
+                out.append(k)
+    return out
+
+
+def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf, layout: Layout) -> None:
+    """Write one bucket: ticker layout <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet, market layout <out>/<YYYY>/<MM>[/<DD>].parquet."""
+    base_cols = ["datetime", "ticker", "open", "high", "low", "close", "volume", "transactions", "vwap", "yr_et", "mo_et"] + (["day_et"] if tf == "minute" else [])
+    final = pd.concat(parts, ignore_index=True)
+    cols = [c for c in base_cols if c in final.columns] + [c for c in final.columns if c not in base_cols]
+    if layout == "market":
+        # ticker-major so one symbol is a contiguous slice and row-group statistics can prune it on read
+        final = final[cols].sort_values(["ticker", "datetime"])
+        date_parts = key[-3:] if tf == "minute" else key[-2:]
+        row_group_size: Optional[int] = 131_072
+    else:
+        final = final[cols].sort_values(["datetime", "ticker"])
+        date_parts = key[1:]
+        row_group_size = None
+    if tf == "minute":
+        yr, mo, dd = date_parts
+        outdir = (out_root / str(key[0]) if layout == "ticker" else out_root) / f"{yr:04d}" / f"{mo:02d}"
+        name = f"{dd:02d}"
+    else:
+        yr, mo = date_parts
+        outdir = (out_root / str(key[0]) if layout == "ticker" else out_root) / f"{yr:04d}"
+        name = f"{mo:02d}"
+    outdir.mkdir(parents=True, exist_ok=True)
+    fout_tmp = outdir / f"{name}.parquet.inprogress"
+    fout = outdir / f"{name}.parquet"
+    table = pa.Table.from_pandas(final, preserve_index=False)
+    if row_group_size:
+        pq.write_table(table, fout_tmp, compression="zstd", row_group_size=row_group_size)
+    else:
+        pq.write_table(table, fout_tmp, compression="zstd")
+    fout_tmp.replace(fout)
+
+
 # ── worker (minute/day via tf switch) ─────────────────────────────────────────
 def worker(
     csv_list: Sequence[str],
@@ -186,6 +254,7 @@ def worker(
     chunk: int,
     worker_id: int,
     tf: Tf,
+    layout: Layout = "ticker",
 ):
     global PROG_COUNTER, LOG_QUEUE
 
@@ -196,12 +265,10 @@ def worker(
 
     rows_in = rows_kept = dropped_watch = dropped_only = 0
 
-    if tf == "minute":
-        # per (ticker,year,month,day)
-        buckets: Dict[Tuple[str,int,int,int], List[pd.DataFrame]] = defaultdict(list)
-    else:
-        # per (ticker,year,month)
-        buckets: Dict[Tuple[str,int,int], List[pd.DataFrame]] = defaultdict(list)
+    # bucket key: ticker layout (ticker, yr, mo[, dd]); market layout (yr, mo[, dd]). Buckets are written as
+    # soon as they can no longer receive rows (see _flushable), bounding memory to ~2 periods per worker.
+    buckets: Dict[tuple, List[pd.DataFrame]] = defaultdict(list)
+    written = 0
 
     try:
         for csv_path in csv_list:
@@ -235,7 +302,11 @@ def worker(
                 usecols=usecols,
                 dtype=dtypes,
                 compression="gzip",
-                chunksize=chunk
+                chunksize=chunk,
+                # Only an empty field is missing: pandas' default NA tokens include "NA", which is a real
+                # ticker (Nano Labs), and would silently turn every one of its rows into a null ticker.
+                keep_default_na=False,
+                na_values=[""],
             ):
                 rows_in += len(df)
 
@@ -285,50 +356,35 @@ def worker(
                 rows_kept += len(df)
 
                 # bucketize
-                if tf == "minute":
-                    for (sym, yr, mo, dd), sub in df.groupby(["ticker","yr_et","mo_et","day_et"], observed=True):
-                        buckets[(str(sym), int(yr), int(mo), int(dd))].append(sub)
-                else:
-                    for (sym, yr, mo), sub in df.groupby(["ticker","yr_et","mo_et"], observed=True):
-                        buckets[(str(sym), int(yr), int(mo))].append(sub)
+                keys = (["yr_et", "mo_et"] if layout == "market" else ["ticker", "yr_et", "mo_et"]) + (["day_et"] if tf == "minute" else [])
+                for k, sub in df.groupby(keys, observed=True):
+                    key = tuple((str(x) if (i == 0 and layout == "ticker") else int(x)) for i, x in enumerate(k))
+                    buckets[key].append(sub)
+
+            # Flush buckets that can no longer receive rows (bounded memory; see _flushable)
+            try:
+                cur = source_period(Path(csv_path), tf)
+            except Exception:
+                cur = None
+            if cur is not None:
+                for k in _flushable(list(buckets.keys()), cur, tf):
+                    _write_bucket(out_root, k, buckets.pop(k), tf, layout)
+                    written += 1
 
     finally:
-        # Write parquet per bucket
-        if tf == "minute":
-            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_et","mo_et","day_et"]
-            for (sym, yr, mo, dd), parts in buckets.items():
-                outdir = out_root / sym / f"{yr:04d}" / f"{mo:02d}"
-                outdir.mkdir(parents=True, exist_ok=True)
-                fout_tmp = outdir / f"{dd:02d}.parquet.inprogress"
-                fout     = outdir / f"{dd:02d}.parquet"
-                final = pd.concat(parts, ignore_index=True)
-                cols = [c for c in base_cols if c in final.columns] + [c for c in final.columns if c not in base_cols]
-                final = final[cols].sort_values(["datetime","ticker"])
-                table = pa.Table.from_pandas(final, preserve_index=False)
-                pq.write_table(table, fout_tmp, compression="zstd")
-                fout_tmp.replace(fout)
-        else:
-            base_cols = ["datetime","ticker","open","high","low","close","volume","transactions","vwap","yr_et","mo_et"]
-            for (sym, yr, mo), parts in buckets.items():
-                outdir = out_root / sym / f"{yr:04d}"
-                outdir.mkdir(parents=True, exist_ok=True)
-                fout_tmp = outdir / f"{mo:02d}.parquet.inprogress"
-                fout     = outdir / f"{mo:02d}.parquet"
-                final = pd.concat(parts, ignore_index=True)
-                cols = [c for c in base_cols if c in final.columns] + [c for c in final.columns if c not in base_cols]
-                final = final[cols].sort_values(["datetime","ticker"])
-                table = pa.Table.from_pandas(final, preserve_index=False)
-                pq.write_table(table, fout_tmp, compression="zstd")
-                fout_tmp.replace(fout)
+        # Write whatever is still buffered
+        for k in list(buckets.keys()):
+            _write_bucket(out_root, k, buckets.pop(k), tf, layout)
+            written += 1
 
         if LOG_QUEUE:
             LOG_QUEUE.put(
                 f"[worker {worker_id:3d}] rows_in={rows_in:,} rows_kept={rows_kept:,} "
                 f"dropped_only={dropped_only:,} dropped_watch={dropped_watch:,} "
-                f"written_files={len(buckets)}"
+                f"written_files={written}"
             )
 
-    return worker_id, len(buckets)
+    return worker_id, written
 
 # ── main progress thread (stays at 100%) ─────────────────────────────────────
 def progress_thread(total_files, counter, stop_event):
@@ -363,7 +419,7 @@ def _scan_one_parquet(ticker: str, p: Path):
     except Exception as ex:
         return ticker, f"[WARN] manifest: failed reading {p}: {ex}"
 
-def build_manifest(out_root: Path, manifest_path: Path, logger=None, workers: int = 4) -> None:
+def build_manifest(out_root: Path, manifest_path: Path, logger=None, workers: int = 4, layout: Layout = "ticker") -> None:
     """
     Build a manifest JSON listing each parquet file and its datetime min/max.
     Shows a tqdm progress bar over all parquet files, optionally threaded.
@@ -374,10 +430,14 @@ def build_manifest(out_root: Path, manifest_path: Path, logger=None, workers: in
 
     # Gather all (ticker, path) pairs
     pairs: List[tuple[str, Path]] = []
-    for ticker_dir in sorted(p for p in out_root.iterdir() if p.is_dir()):
-        ticker = ticker_dir.name
-        for p in sorted(ticker_dir.rglob("*.parquet")):
-            pairs.append((ticker, p))
+    if layout == "market":
+        # one key for the whole lake; each entry carries the date range of an all-ticker file
+        pairs = [("__market__", p) for p in sorted(out_root.rglob("*.parquet"))]
+    else:
+        for ticker_dir in sorted(p for p in out_root.iterdir() if p.is_dir()):
+            ticker = ticker_dir.name
+            for p in sorted(ticker_dir.rglob("*.parquet")):
+                pairs.append((ticker, p))
 
     total = len(pairs)
     manifest: Dict[str, List[Dict[str, str]]] = {}
@@ -444,6 +504,7 @@ def run_ingest(
     write_manifest: bool = False,
     manifest_out: Optional[Path] = None,
     manifest_workers: int = 4,
+    layout: Layout = "ticker",
 ):
     import multiprocessing as mp
 
@@ -458,6 +519,7 @@ def run_ingest(
     LOG(f"[INFO] Starting {tf.upper()} ingest", critical=True)
     LOG(f"[INFO] Source: {src_root}", critical=True)
     LOG(f"[INFO] Output: {out_root}", critical=True)
+    LOG(f"[INFO] Layout: {layout}", critical=True)
     if watch: LOG(f"[INFO] Watchlist: {watch}", critical=True)
     if only:  LOG(f"[INFO] Only: {only.upper()}", critical=True)
 
@@ -528,7 +590,7 @@ def run_ingest(
         futures = []
         for wid in range(n_workers):
             futures.append(ex.submit(
-                worker, owned_csvs[wid], out_root, watch_upper, only_upper, chunk, wid, tf
+                worker, owned_csvs[wid], out_root, watch_upper, only_upper, chunk, wid, tf, layout
             ))
         for f in futures:
             wid, nkeys = f.result()
@@ -545,7 +607,7 @@ def run_ingest(
     if write_manifest:
         default_name = f"manifest_{tf}.json"
         manifest_path = manifest_out if manifest_out else (out_root / default_name)
-        build_manifest(out_root, manifest_path, logger=LOG, workers=max(1, manifest_workers))
+        build_manifest(out_root, manifest_path, logger=LOG, workers=max(1, manifest_workers), layout=layout)
 
     # Stop logger thread
     log_stop.set()
@@ -562,6 +624,8 @@ if __name__ == "__main__":
     ap.add_argument("--out", required=True, type=Path, help="destination Parquet lake")
     ap.add_argument("--watch", type=Path, default=None, help="JSON/TXT ticker list (optional, case-insensitive)")
     ap.add_argument("--only", type=str, default=None, help="Restrict to a single ticker (e.g., AAPL)")
+    ap.add_argument("--layout", choices=["ticker", "market"], default="ticker",
+                    help="ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet | market: <out>/<YYYY>/<MM>[/<DD>].parquet with all tickers (whole universe)")
     ap.add_argument("--workers", type=int, default=os.cpu_count()//2 or 1, help="parallel workers")
     ap.add_argument("--chunk", type=int, default=CHUNK_DEFAULT, help="rows per pandas.read_csv chunk")
     # Manifest options
@@ -585,5 +649,5 @@ if __name__ == "__main__":
         quiet_console=args.quiet_console,
         write_manifest=args.write_manifest,
         manifest_out=args.manifest_out,
-        manifest_workers=args.manifest_workers,
+        manifest_workers=args.manifest_workers, layout=args.layout,
     )

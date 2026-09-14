@@ -20,11 +20,15 @@ def bars(
     write_manifest: bool = typer.Option(False, help="Write manifest JSON after ingest"),
     manifest_out: Path | None = typer.Option(None, help="Manifest path (default: <out>/manifest_<tf>.json)"),
     manifest_workers: int = typer.Option(8, help="Threads for manifest scan"),
+    layout: str = typer.Option("ticker", help="ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet | market: <out>/<YYYY>/<MM>[/<DD>].parquet with all tickers (whole universe)"),
 ):
+    if layout not in ("ticker", "market"):
+        raise typer.BadParameter("--layout must be 'ticker' or 'market'")
     run_ingest(
         tf=tf, src_root=src, out_root=out, watch=watch, only=only,
         workers=workers, chunk=chunk, log_file=log_file, quiet_console=quiet_console,
         write_manifest=write_manifest, manifest_out=manifest_out, manifest_workers=manifest_workers,
+        layout=layout,
     )
 
 @app.command()
