@@ -13,7 +13,7 @@ A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull
 ## Features
 
 - Reproducible **unadjusted** lakes (minute/day).
-- **Refdata** pullers (security master, splits, dividends).
+- **Refdata** pullers (security master, ticker events, splits, dividends) with **holder ids** (FIGI → CIK → ticker) that keep a recycled ticker's previous company separate.
 - **Adjusted** lakes (split-adjusted OHLC/VWAP/Volume + total-return).
 - Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles.
 - A schema-safe loader module for notebooks/QA plots.
@@ -195,10 +195,18 @@ bash scripts/pull_ref_data.sh
 ```
 
 By default, this writes into `refdata/spx_ndx_combined/`:
-- `security_master.parquet`
-- `stock_splits.parquet`
-- `cash_dividends.parquet`
-- `_ticker_normalization_map.csv` / `_missing_tickers.txt` (preflight)
+- `security_master.parquet` — one row per **(ticker, holder)**. A holder is the company behind the ticker, identified by `holder_id` = composite FIGI → `CIK__<cik>` → `NOFIGI__<TICKER>`, with its window `effective_start` / `effective_end` (NaT = open).
+- `ticker_events.parquet` / `ticker_symbol_history.parquet` — each holder's symbol history (e.g. `FB` → `META` on 2022-06-09). Former symbols missing from your watchlist are listed at the end of the pull.
+- `stock_splits.parquet`, `cash_dividends.parquet`
+- `_ticker_normalization_map.csv` / `_missing_tickers.txt` (preflight), `_*_failed_tickers.txt` (pull failures, see Troubleshooting)
+
+**Recycled tickers.** A symbol reused by a different company (General Motors Corp until 2009, General Motors Company from 2010-11-18) must become two holders, or the second company's splits and dividends get applied to the first one's prices. The current holder comes from the ticker-details endpoint; previous holders are found by asking who held the ticker on given dates:
+
+```bash
+POLYGON_PROBE_DATES=2005-01-03,2012-01-03 bash scripts/pull_ref_data.sh   # +1 request per ticker per date
+```
+
+Pick probe dates inside the periods your lake covers (the flat files start 2003-09). Polygon returns no FIGI for some delisted holders, hence the CIK fallback.
 
 > Adjust `scripts/pull_ref_data.sh` if you use a different collection/path.
 
@@ -282,5 +290,6 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
 
 - **Time zone:** the `datetime` column in the unadjusted lake is tz-aware **US/Eastern**. Lake files are partitioned on the **ET trading date** (`<YYYY>/<MM>/<DD>`), and split/dividend factors are aligned on that same date, so after-hours bars (up to 20:00 ET) stay with their session instead of spilling into the next UTC day.
 - **Precision:** prices are stored as `float64`.
+- **Ids:** every adjusted row carries `id`, the holder (company) of the ticker on that date, keyed like the security master. Splits and dividends are matched by `id`, never by ticker alone, so a recycled ticker's previous company keeps only its own corporate actions and anchors its own adjustment factors. A ticker with a single known holder gets that id for all its rows regardless of dates (windows only disambiguate between holders). To stitch one company across a symbol change (`FB` → `META`), include both symbols in the ingest watchlist; `ticker_symbol_history.parquet` lists them.
 - **Total return (`close_tr`)**: built over split-adjusted prices, reinvesting cash dividends on ex-date. Sanity check: on a day with no dividend `close_tr` moves exactly like `close_sa`, and across an ex-date where the price drops by exactly the dividend the `close_tr` return is 0. Polygon reports dividends in raw dollars, so amounts are scaled by the split factor in force before being divided by the split-adjusted base.
 - **QA plot normalization:** base-100 (first value → 100) to compare paths. Shapes are unchanged.

@@ -22,7 +22,10 @@ fi
 OUTDIR="$REPO_ROOT/refdata/$COLL"
 mkdir -p "$OUTDIR"
 
+# POLYGON_PROBE_DATES (optional, comma-separated YYYY-MM-DD): also resolve who held each ticker on those
+# dates, so a recycled ticker's previous company gets its own id (+1 request per ticker per date).
+# POLYGON_MIN_INTERVAL_SEC paces requests on rate-limited plans (see README troubleshooting).
 python "$REPO_ROOT/legacy_scripts/run_pullers.py" \
   --tickers "$REPO_ROOT/data/ticker_lists/${COLL}.json" \
   --outdir  "$OUTDIR" \
-  --skip-events
+  ${POLYGON_PROBE_DATES:+--probe-dates "$POLYGON_PROBE_DATES"}

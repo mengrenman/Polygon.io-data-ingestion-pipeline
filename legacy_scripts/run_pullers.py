@@ -15,6 +15,8 @@ from polygon_pullers import (
     pull_dividends,
     pull_splits,
     pull_ticker_events,
+    symbol_history,
+    refine_windows,
     load_api_key,
 )
 
@@ -171,7 +173,11 @@ def main():
                     help="Optional path to write one-per-line list of missing/unknown tickers. "
                          "Default: <outdir>/_missing_tickers.txt (preflight also writes this).")
     ap.add_argument("--skip-events", action="store_true",
-                    help="Skip pulling ticker events.")
+                    help="Skip pulling ticker events (symbol history per holder; 1 request per ticker).")
+    ap.add_argument("--probe-dates", type=str, default=None,
+                    help="Comma-separated YYYY-MM-DD dates. For each ticker also resolve who held it on those "
+                         "dates, so a recycled ticker's previous company becomes its own holder/id "
+                         "(old GM until 2009 vs new GM from 2010-11-18). +1 request per ticker per date.")
     ap.add_argument("--no-normalize", action="store_true",
                     help="Disable normalization (still uppercases).")
     ap.add_argument("--no-preflight", action="store_true",
@@ -222,8 +228,10 @@ def main():
     # Where to save missing list during pulls (post-preflight skip list is usually small)
     missing_out = args.missing_out or (outdir / "_missing_tickers_pull_phase.txt")
 
-    # [1/3] Security master
-    print("[1/3] Building security master...")
+    probe_dates = [x.strip() for x in args.probe_dates.split(",") if x.strip()] if args.probe_dates else None
+
+    # [1/4] Security master (one row per ticker holder)
+    print("[1/4] Building security master..." + (f" (probe dates: {probe_dates})" if probe_dates else ""))
     SECMASTER_PARQUET = outdir / "security_master.parquet"
     sm_df = pull_security_master(
         valid_tickers,
@@ -232,11 +240,31 @@ def main():
         api_key_file=None,
         fail_on_missing=args.fail_on_missing,
         missing_out=missing_out,
+        probe_dates=probe_dates,
     )
-    print(f"Security master rows: {len(sm_df)} → {SECMASTER_PARQUET}")
+    n_multi = int((sm_df.groupby("ticker")["holder_id"].nunique() > 1).sum()) if len(sm_df) else 0
+    print(f"Security master rows: {len(sm_df)} ({n_multi} ticker(s) with more than one holder) → {SECMASTER_PARQUET}")
 
-    # [2/3] Dividends
-    print("[2/3] Pulling dividends...")
+    # [2/4] Ticker events -> symbol history per holder -> tighten holder windows
+    if not args.skip_events:
+        print("[2/4] Pulling ticker events (symbol history per holder)...")
+        EVENTS_PARQUET = outdir / "ticker_events.parquet"
+        ev_df = pull_ticker_events(valid_tickers, out_parquet=str(EVENTS_PARQUET), api_key=api_key, api_key_file=None)
+        print(f"Ticker events rows: {len(ev_df)} → {EVENTS_PARQUET}")
+        hist = symbol_history(ev_df)
+        HIST_PARQUET = outdir / "ticker_symbol_history.parquet"
+        hist.to_parquet(HIST_PARQUET, index=False)
+        aliases = hist[~hist["ticker"].isin(valid_tickers)]
+        note = (f"  ({len(aliases)} former symbol(s) not in the watchlist, e.g. {aliases['ticker'].head(5).tolist()}; "
+                f"add them to the ticker list to stitch that history)") if len(aliases) else ""
+        print(f"Symbol history rows: {len(hist)} → {HIST_PARQUET}{note}")
+        sm_df = refine_windows(sm_df, hist)
+        sm_df.to_parquet(SECMASTER_PARQUET, index=False)
+    else:
+        print("[2/4] Ticker events skipped (--skip-events)")
+
+    # [3/4] Dividends
+    print("[3/4] Pulling dividends...")
     DIV_PARQUET = outdir / "cash_dividends.parquet"
     div_df = pull_dividends(
         valid_tickers,
@@ -246,8 +274,8 @@ def main():
     )
     print(f"Dividends rows: {len(div_df)} → {DIV_PARQUET}")
 
-    # [3/3] Splits
-    print("[3/3] Pulling splits...")
+    # [4/4] Splits
+    print("[4/4] Pulling splits...")
     SPL_PARQUET = outdir / "stock_splits.parquet"
     spl_df = pull_splits(
         valid_tickers,
@@ -256,18 +284,6 @@ def main():
         api_key_file=None,
     )
     print(f"Splits rows: {len(spl_df)} → {SPL_PARQUET}")
-
-    # (Optional) Ticker events
-    if not args.skip_events:
-        print("[extra] Pulling ticker events (optional)...")
-        EVENTS_PARQUET = outdir / "ticker_events.parquet"
-        ev_df = pull_ticker_events(
-            valid_tickers,
-            out_parquet=str(EVENTS_PARQUET),
-            api_key=api_key,
-            api_key_file=None,
-        )
-        print(f"Ticker events rows: {len(ev_df)} → {EVENTS_PARQUET}")
 
     # Final summary
     print("\nDone.")
