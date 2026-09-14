@@ -3,8 +3,10 @@
 A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull **refdata** (splits/dividends/security master), and build **adjusted** lakes (split-adjusted + total-return). Scripts are reproducible and notebook-friendly.
 
 <p align="center">
-<img src="figures/adjust.png" alt="OLS residuals" width="1000">
+<img src="figures/adjust.png" alt="NVDA day bars: unadjusted close vs split-adjusted close vs total-return close, base 100" width="1000">
 </p>
+
+<p align="center"><sub>NVDA 2020–2024 day bars from the Polygon flat files; splits and dividends pulled with Step 4; adjusted with Step 5 (<code>-m ohlc</code>); rendered through <code>polygon_ingest.lake_io.load_series</code>. The lower panel is the total-return premium over the split-adjusted close: for a stock yielding ~0.1%/yr it must sit within a fraction of a percent of zero and step up only at ex-dates.</sub></p>
 
 ---
 
@@ -254,6 +256,16 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
 
 - **`POLYGON_API_KEY` not found**  
   Put it in `.env` (repo root) or export it in your shell. `scripts/pull_ref_data.sh` auto-loads `.env`.
+
+- **`429` / `MaxRetryError ... too many 429 error responses` during Step 4**  
+  Your Polygon plan is rate-limited (the Basic tier allows 5 requests/minute). Pace the pullers:
+  ```bash
+  POLYGON_MIN_INTERVAL_SEC=12.5 bash scripts/pull_ref_data.sh   # or put the variable in .env
+  ```
+  Tickers whose pull still failed are listed in `refdata/<collection>/_splits_failed_tickers.txt` and
+  `_dividends_failed_tickers.txt` (plus `_missing_tickers_pull_phase.txt` for the security master).
+  Do **not** build an adjusted lake while `_splits_failed_tickers.txt` is non-empty: a ticker with no
+  splits row comes out **unadjusted across its splits**.
 
 - **Empty plots / empty merges**  
   Double-check notebook paths match your lakes. For **day**, both lakes must overlap on dates.
