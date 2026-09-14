@@ -101,7 +101,8 @@ repo_polygonio/
 │
 ├─ lake/                                 # unadjusted lakes (generated, git-ignored)
 │  ├─ minute/<collection>/<TICKER>/<YYYY>/<MM>/<DD>.parquet
-│  └─ day/<collection>/<TICKER>/<YYYY>/<MM>.parquet
+│  ├─ day/<collection>/<TICKER>/<YYYY>/<MM>.parquet
+│  └─ day/all/<YYYY>/<MM>.parquet         # --layout market: every ticker, one file per month
 │
 ├─ lake_adj/                             # adjusted lakes (generated, git-ignored)
 │  ├─ minute/<collection>_adjusted/<TICKER>/<YYYY>/<MM>/<DD>.parquet
@@ -185,6 +186,16 @@ Output layout (`<collection>` is the ticker-list name, e.g. `spx_ndx_combined`):
 - `lake/minute/<collection>/<TICKER>/<YYYY>/<MM>/<DD>.parquet`
 
 Flags: `--out` is the destination lake root, `--watch` is the ticker list (json/txt). Use `--only NVDA` for a single ticker and `--write-manifest` to emit a manifest the loader can use.
+
+**Whole universe (every ticker in the flat files): use the market layout.** One file per ticker per month means ~2.4 million tiny files for the full market; `--layout market` writes one file per period holding all tickers instead — 264 monthly files for the day history, ticker-major with row-group statistics so a single symbol is pruned on read:
+
+```bash
+poly bars --tf day --layout market \
+  --src $HOME/data/polygonio_data/flatfiles/day \
+  --out ./lake/day/all          # -> lake/day/all/<YYYY>/<MM>.parquet, no --watch
+```
+
+The loaders and Step 5 detect the layout from the directory structure (`<YYYY>/` vs `<TICKER>/`), so nothing downstream needs a flag. Minute market lakes (`<YYYY>/<MM>/<DD>.parquet`) can be ingested the same way; the streaming adjuster for them is not written yet. Workers now write each period's files as soon as it can no longer receive rows, so memory stays at about two periods per worker for either layout.
 
 ---
 
@@ -295,6 +306,7 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
 
 - **Time zone:** the `datetime` column in the unadjusted lake is tz-aware **US/Eastern**. Lake files are partitioned on the **ET trading date** (`<YYYY>/<MM>/<DD>`), and split/dividend factors are aligned on that same date, so after-hours bars (up to 20:00 ET) stay with their session instead of spilling into the next UTC day.
 - **Precision:** prices are stored as `float64`.
+- **Layouts:** `ticker` (`<root>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet`, default, best for a few hundred symbols) or `market` (`<root>/<YYYY>/<MM>[/<DD>].parquet`, all tickers per file, for the whole universe and cross-sectional work such as point-in-time universes). Detected automatically; `factor_builder.py --layout` / `build_adjusted_lake.sh -L` override.
 - **Ids:** every adjusted row carries `id`, the holder (company) of the ticker on that date, keyed like the security master. Splits and dividends are matched by `id`, never by ticker alone, so a recycled ticker's previous company keeps only its own corporate actions and anchors its own adjustment factors. A ticker with a single known holder gets that id for all its rows regardless of dates (windows only disambiguate between holders). To stitch one company across a symbol change (`FB` → `META`), include both symbols in the ingest watchlist; `ticker_symbol_history.parquet` lists them.
 - **Total return (`close_tr`)**: built over split-adjusted prices, reinvesting cash dividends on ex-date. Sanity check: on a day with no dividend `close_tr` moves exactly like `close_sa`, and across an ex-date where the price drops by exactly the dividend the `close_tr` return is 0. Polygon reports dividends in raw dollars, so amounts are scaled by the split factor in force before being divided by the split-adjusted base.
 - **QA plot normalization:** base-100 (first value → 100) to compare paths. Shapes are unchanged.

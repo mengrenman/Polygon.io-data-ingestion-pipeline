@@ -17,6 +17,7 @@ Options:
   -p, --prices <dir>            Unadjusted lake root (defaults: see below)
   -o, --outdir <dir>            Adjusted lake root (defaults: see below)
   -r, --refdir <dir>            Refdata dir (default: <repo>/refdata/<collection>)
+  -L, --layout <auto|ticker|market>  Lake layout (default auto: detect from the unadjusted lake)
   -s, --start YYYY-MM-DD        Optional start date filter
   -e, --end   YYYY-MM-DD        Optional end date filter
   -w, --workers N               CPU workers (day mode; default 90)
@@ -45,6 +46,7 @@ COLL=""
 PRICES=""
 OUTDIR=""
 REFDIR=""
+LAYOUT=""
 START=""
 END=""
 WORKERS=90
@@ -62,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     -p|--prices) PRICES="$2"; shift 2 ;;
     -o|--outdir) OUTDIR="$2"; shift 2 ;;
     -r|--refdir) REFDIR="$2"; shift 2 ;;
+    -L|--layout) LAYOUT="$2"; shift 2 ;;
     -s|--start) START="$2"; shift 2 ;;
     -e|--end) END="$2"; shift 2 ;;
     -w|--workers) WORKERS="$2"; shift 2 ;;
@@ -120,6 +123,8 @@ if [[ "$TF" == "minute" ]]; then
 else
   CMD+=( --workers "$WORKERS" )
 fi
+
+[[ -n "$LAYOUT" ]] && CMD+=( --layout "$LAYOUT" )
 
 # Optional dates
 [[ -n "$START" ]] && CMD+=( --start "$START" )

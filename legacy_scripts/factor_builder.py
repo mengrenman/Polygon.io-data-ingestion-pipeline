@@ -37,6 +37,15 @@ def _path_contains_any(parts: Iterable[str], candidates: set[str]) -> Optional[s
             return p
     return None
 
+def _detect_layout(root: Path) -> str:
+    """'market' if the lake root holds <YYYY>/ directories (all tickers per file), else 'ticker'."""
+    root = Path(root)
+    if root.is_dir():
+        for p in root.iterdir():
+            if p.is_dir() and len(p.name) == 4 and p.name.isdigit():
+                return "market"
+    return "ticker"
+
 def _detect_ts_unit(maxv: float) -> str:
     if maxv >= 1e17:  return "ns"
     if maxv >= 1e14:  return "us"
@@ -143,15 +152,20 @@ def _read_prices(path: Path,
         raise SystemExit(f"No parquet files found under {path}")
 
     tickset = set(tickers) if tickers else None
+    layout = _detect_layout(path) if path.is_dir() else "ticker"
+    filters = None
     if path.is_dir() and tickset:
-        files = [fp for fp in files if _path_contains_any(fp.parts, tickset)]
-        if not files:
-            raise SystemExit("No files matched the provided tickers under the directory (<LAKE>/<TICKER>/...)")
+        if layout == "ticker":
+            files = [fp for fp in files if _path_contains_any(fp.parts, tickset)]
+            if not files:
+                raise SystemExit("No files matched the provided tickers under the directory (<LAKE>/<TICKER>/...)")
+        else:
+            filters = [("ticker", "in", sorted(tickset))]   # market layout: all tickers per file, prune on read
 
     dfs = []
-    for f in tqdm(files, desc=f"Reading prices recursively from {path}"):
+    for f in tqdm(files, desc=f"Reading prices ({layout} layout) from {path}"):
         try:
-            raw = pd.read_parquet(f)
+            raw = pd.read_parquet(f, filters=filters)
             dfs.append(_normalize_one(raw, f, tickset))
         except Exception as e:
             print(f"[WARN] Skipping {f}: {e}")
@@ -626,13 +640,36 @@ def _select_columns_to_write(df: pd.DataFrame, materialize: str) -> List[str]:
     cols = base + extra + [c for c in ohlc if c in df.columns]
     return [c for c in cols if c in df.columns]
 
-def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, write_workers: int, materialize: str) -> None:
+def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, write_workers: int, materialize: str,
+                            layout: str = "ticker") -> None:
     df = df.copy()
     df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
     df["YYYY"] = df["datetime"].dt.year
     df["MM"]   = df["datetime"].dt.month
     if granularity == "minute":
         df["DD"] = df["datetime"].dt.day
+
+    if layout == "market":
+        # all tickers per period file, ticker-major: <out>/<YYYY>/<MM>.parquet (day) or /<DD>.parquet (minute)
+        df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
+        cols_to_write = _select_columns_to_write(df, materialize)
+        key_cols = ["YYYY", "MM"] + (["DD"] if granularity == "minute" else [])
+
+        def _mpath(k) -> Path:
+            y, m, *d = (int(x) for x in k)
+            return (outdir / f"{y:04d}" / f"{m:02d}" / f"{d[0]:02d}.parquet") if d else (outdir / f"{y:04d}" / f"{m:02d}.parquet")
+
+        groups = list(df.groupby(key_cols))
+        desc = f"Writing {granularity} lake (market layout" + (f", parallel x{write_workers})" if write_workers > 1 else ")")
+        if write_workers <= 1:
+            for k, g in tqdm(groups, desc=desc):
+                _write_one_parquet(_mpath(k), g[cols_to_write])
+        else:
+            with ThreadPoolExecutor(max_workers=write_workers) as ex:
+                futs = [ex.submit(_write_one_parquet, _mpath(k), g[cols_to_write]) for k, g in groups]
+                for _ in tqdm(as_completed(futs), total=len(futs), desc=desc):
+                    _.result()
+        return
 
     df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
     cols_to_write = _select_columns_to_write(df, materialize)
@@ -1169,6 +1206,9 @@ def main():
     ap.add_argument("--end", type=str, default=None, help="Optional end date YYYY-MM-DD")
     ap.add_argument("--granularity", choices=["day", "minute"], required=True,
                     help="Granularity of the parquet lake layout to write")
+    ap.add_argument("--layout", choices=["auto", "ticker", "market"], default="auto",
+                    help="Lake layout of --prices and --outdir: ticker (<root>/<TICKER>/<YYYY>/...), market "
+                         "(<root>/<YYYY>/<MM>[/<DD>].parquet, all tickers). auto = detect from --prices.")
     ap.add_argument("--outdir", type=Path, required=True,
                     help="Output directory for adjusted parquet lake")
     ap.add_argument("--workers", type=int, default=_default_workers(),
@@ -1215,8 +1255,13 @@ def main():
     spl = _assign_event_ids(spl, sm, ["execution_date"])
     div = _assign_event_ids(div, sm, ["ex_date", "ex_dividend_date"])
 
+    layout = args.layout if args.layout != "auto" else _detect_layout(args.prices)
+
     # Streaming path for huge MINUTE lakes
     if args.granularity == "minute" and args.minute_stream:
+        if layout == "market":
+            raise SystemExit("--minute-stream walks <root>/<TICKER>/<YYYY>/<MM>/<DD>.parquet; a market-layout minute "
+                             "lake (all tickers per day file) is not supported by the streaming path yet.")
         files = _iter_minute_day_files(args.prices, tickers)
         if args.start or args.end:
             s = pd.to_datetime(args.start) if args.start else None
@@ -1287,7 +1332,7 @@ def main():
         use_split_base = False
 
     args.outdir.mkdir(parents=True, exist_ok=True)
-    _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize)
+    _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize, layout=layout)
 
     csv_path = _write_summary_csv(stats, args.outdir, px_tr, args.adjust, use_split_base)
     if args.verbose:
