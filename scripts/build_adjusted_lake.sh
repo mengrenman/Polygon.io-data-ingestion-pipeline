@@ -16,6 +16,7 @@ Required:
 Options:
   -p, --prices <dir>            Unadjusted lake root (defaults: see below)
   -o, --outdir <dir>            Adjusted lake root (defaults: see below)
+  -r, --refdir <dir>            Refdata dir (default: <repo>/refdata/<collection>)
   -s, --start YYYY-MM-DD        Optional start date filter
   -e, --end   YYYY-MM-DD        Optional end date filter
   -w, --workers N               CPU workers (day mode; default 90)
@@ -43,6 +44,7 @@ TF=""
 COLL=""
 PRICES=""
 OUTDIR=""
+REFDIR=""
 START=""
 END=""
 WORKERS=90
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     -c|--collection) COLL="$2"; shift 2 ;;
     -p|--prices) PRICES="$2"; shift 2 ;;
     -o|--outdir) OUTDIR="$2"; shift 2 ;;
+    -r|--refdir) REFDIR="$2"; shift 2 ;;
     -s|--start) START="$2"; shift 2 ;;
     -e|--end) END="$2"; shift 2 ;;
     -w|--workers) WORKERS="$2"; shift 2 ;;
@@ -76,7 +79,7 @@ done
 [[ "$TF" != "minute" && "$TF" != "day" ]] && { echo "tf must be minute or day"; exit 1; }
 
 TICKERS_JSON="$REPO_ROOT/data/ticker_lists/${COLL}.json"
-REFDIR="$REPO_ROOT/refdata/${COLL}"
+[[ -z "$REFDIR" ]] && REFDIR="$REPO_ROOT/refdata/${COLL}"
 [[ -f "$TICKERS_JSON" ]] || { echo "Missing $TICKERS_JSON"; exit 1; }
 [[ -d "$REFDIR" ]] || { echo "Missing $REFDIR"; exit 1; }
 

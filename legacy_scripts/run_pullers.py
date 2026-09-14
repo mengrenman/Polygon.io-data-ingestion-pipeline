@@ -15,10 +15,12 @@ from polygon_pullers import (
     pull_dividends,
     pull_splits,
     pull_ticker_events,
+    probe_previous_holders,
     symbol_history,
     refine_windows,
     load_api_key,
 )
+from polygon_pullers.bulk import make_fetch, pull_market_refdata, derive_collection_refdata
 
 
 # -----------------------------
@@ -155,6 +157,68 @@ def preflight_validate(
 
 
 # -----------------------------
+# Bulk mode
+# -----------------------------
+def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
+    """Market-wide tables once, collection files derived by filtering. Same request cost for any universe size."""
+    market_dir = (args.market_dir or (outdir.parent / "_market")).resolve()
+    fetch = make_fetch(api_key)
+    probe_dates = [x.strip() for x in args.probe_dates.split(",") if x.strip()] if args.probe_dates else None
+
+    print(f"[1/3] Market tables -> {market_dir}" + (" (full refetch)" if args.full else " (incremental)"))
+    tables = pull_market_refdata(market_dir, fetch, since=args.since, full=args.full)
+    tk = tables["tickers"]
+    print(f"  tickers: {len(tk)} rows ({int(tk['active'].fillna(False).astype(bool).sum())} active) | "
+          f"splits: {len(tables['splits'])} rows | dividends: {len(tables['dividends'])} rows")
+
+    # Universe normalization: uppercase + the same separator guess as per-ticker mode, checked against the table
+    normalized = {tk_: (tk_.strip().upper() if args.no_normalize else normalize_guess(tk_)) for tk_ in raw_tickers}
+    known = set(tk["ticker"])
+    resolved = {}
+    for orig, guess in normalized.items():
+        for cand in ([guess] + [c for c in candidate_variants(orig) if c != guess]):
+            if cand in known:
+                resolved[orig] = cand
+                break
+    pd.DataFrame([{"original": k, "normalized_guess": normalized[k], "resolved": resolved.get(k, ""),
+                   "status": "OK" if k in resolved else "MISSING", "tried_variants": "", "message": ""}
+                  for k in raw_tickers]).to_csv(outdir / "_ticker_normalization_map.csv", index=False)
+    valid_tickers = list(dict.fromkeys(resolved.values()))
+    print(f"Tickers (resolved & unique): {len(valid_tickers)}; not in market tickers table: {len(raw_tickers) - len(resolved)}")
+
+    extra = None
+    if probe_dates:
+        print(f"[2/3] Probing previous holders on {probe_dates} ({len(valid_tickers) * len(probe_dates)} requests)...")
+        extra = probe_previous_holders(valid_tickers, probe_dates, api_key=api_key)
+        print(f"  probe rows: {len(extra)}")
+    else:
+        print("[2/3] No --probe-dates; recycled tickers are separated only where the previous company kept the symbol until delisting")
+
+    print(f"[3/3] Deriving collection files -> {outdir}")
+    summary = derive_collection_refdata(market_dir, valid_tickers, outdir, extra_holders=extra)
+    print(f"  security master rows: {summary['security_master_rows']} ({summary['multi_holder_tickers']} ticker(s) with >1 holder) | "
+          f"splits: {summary['splits']} | dividends: {summary['dividends']} | missing tickers: {len(summary['missing'])}")
+    if summary["missing"]:
+        print(f"  missing: {outdir / '_missing_tickers.txt'} -> {summary['missing'][:10]}")
+    if summary["ambiguous_delisted"]:
+        print(f"  {len(summary['ambiguous_delisted'])} ticker(s) have delisted records without FIGI/CIK (ignored; see "
+              f"{outdir / '_ambiguous_delisted_records.csv'}). If one is a different company, add a --probe-dates "
+              f"date before its delisting: {summary['ambiguous_delisted'][:8]}")
+
+    if args.events:
+        print(f"[extra] Ticker events ({len(valid_tickers)} requests)...")
+        ev_df = pull_ticker_events(valid_tickers, out_parquet=str(outdir / "ticker_events.parquet"), api_key=api_key, api_key_file=None)
+        hist = symbol_history(ev_df)
+        hist.to_parquet(outdir / "ticker_symbol_history.parquet", index=False)
+        sm = refine_windows(pd.read_parquet(outdir / "security_master.parquet"), hist)
+        sm.to_parquet(outdir / "security_master.parquet", index=False)
+        aliases = hist[~hist["ticker"].isin(valid_tickers)]
+        print(f"  events: {len(ev_df)} rows; symbol history: {len(hist)} rows" +
+              (f"; {len(aliases)} former symbol(s) not in the watchlist, e.g. {aliases['ticker'].head(5).tolist()}" if len(aliases) else ""))
+    print("\nDone (bulk).")
+
+
+# -----------------------------
 # Main
 # -----------------------------
 def main():
@@ -182,6 +246,19 @@ def main():
                     help="Disable normalization (still uppercases).")
     ap.add_argument("--no-preflight", action="store_true",
                     help="Disable API validation pass; use normalized guesses directly.")
+    ap.add_argument("--bulk", action="store_true",
+                    help="Pull MARKET-WIDE tables (tickers active+delisted, all splits, all dividends; a few hundred "
+                         "requests regardless of universe size) into --market-dir, then derive this collection's "
+                         "files by filtering. Incremental on re-runs (splits/dividends since last date - 30 days, "
+                         "merged by Polygon id). Preflight is replaced by a membership check against the tickers table.")
+    ap.add_argument("--market-dir", type=Path, default=None,
+                    help="Where the market tables live (default: <outdir>/../_market).")
+    ap.add_argument("--since", type=str, default=None,
+                    help="Bulk mode: fetch splits/dividends with dates >= this (YYYY-MM-DD) instead of the automatic window.")
+    ap.add_argument("--full", action="store_true",
+                    help="Bulk mode: refetch all splits/dividends instead of an incremental refresh.")
+    ap.add_argument("--events", action="store_true",
+                    help="Bulk mode: also pull per-ticker ticker events (1 request per ticker) for symbol history.")
     args = ap.parse_args()
 
     outdir = args.outdir.resolve()
@@ -197,6 +274,9 @@ def main():
     raw_tickers = [str(t).strip() for t in raw_tickers if str(t).strip()]
 
     print(f"Tickers (input): {len(raw_tickers)}")
+
+    if args.bulk:
+        return _run_bulk(args, api_key, raw_tickers, outdir)
 
     # Preflight normalize + validate
     if args.no_normalize and args.no_preflight:

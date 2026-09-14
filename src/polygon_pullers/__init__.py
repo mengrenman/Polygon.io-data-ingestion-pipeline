@@ -186,7 +186,11 @@ def _dedupe_holders(df: pd.DataFrame) -> pd.DataFrame:
     df = df.assign(_cur=(df["holder_source"] == "current").astype(int))
     df = df.sort_values(["ticker", "holder_id", "_cur"], ascending=[True, True, False])
     agg = {c: "first" for c in SM_COLUMNS if c not in ("ticker", "holder_id", "effective_start", "effective_end", "anchor_date")}
-    agg.update(effective_start="min", effective_end="max", anchor_date="min")
+    # start: earliest known; end: open (NaT) wins - an active record and a stale delisted record of the same
+    # company must not close the holder's window; anchor: earliest probe date
+    agg.update(effective_start="min",
+               effective_end=lambda x: pd.NaT if x.isna().any() else x.max(),
+               anchor_date="min")
     out = df.groupby(["ticker", "holder_id"], as_index=False).agg(agg)
     return out[SM_COLUMNS].sort_values(["ticker", "holder_source"]).reset_index(drop=True)
 
@@ -194,6 +198,44 @@ def _dedupe_holders(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------
 # Security Master (details)
 # --------------------------
+def probe_previous_holders(
+    tickers: Iterable[str],
+    probe_dates: Sequence[str],
+    *,
+    api_key: Optional[str] = None,
+    api_key_file: Optional[str | Path] = None,
+    cli: Optional[RESTClient] = None,
+) -> pd.DataFrame:
+    """
+    For each ticker and probe date, who held the ticker on that date (GET /v3/reference/tickers/{t}?date=).
+    Rows in SM_COLUMNS with holder_source 'probe:<date>' and anchor_date = the probe date; a holder with
+    neither FIGI nor CIK is dropped (it could not be told apart from the current holder and a phantom second
+    holder would split the ticker's history downstream). +1 request per ticker per date.
+    """
+    if cli is None:
+        cli = _client(load_api_key(api_key, api_key_file))
+    rows: List[Dict[str, Any]] = []
+    probe_dates = [str(x) for x in probe_dates]
+    for t in _to_upper_list(tickers):
+        for pdate in probe_dates:
+            try:
+                d = _retrying_call(cli.get_ticker_details, t, date=pdate)
+            except BadResponse as e:
+                if "Ticker not found" in str(e) or '"status":"NOT_FOUND"' in str(e):
+                    continue   # nobody held this ticker on that date
+                print(f"[warn] probe {t}@{pdate}: {str(e)[:200]}", file=sys.stderr)
+                continue
+            except Exception as e:
+                print(f"[warn] probe {t}@{pdate}: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+                continue
+            row = _details_row(d, t, source=f"probe:{pdate}", anchor_date=pdate)
+            if row["holder_id"].startswith("NOFIGI__"):
+                print(f"[warn] probe {t}@{pdate}: holder has neither FIGI nor CIK ({row['name']!r}); ignored", file=sys.stderr)
+                continue
+            rows.append(row)
+    return pd.DataFrame(rows, columns=SM_COLUMNS)
+
+
 def pull_security_master(
     tickers: Iterable[str],
     *,
@@ -219,8 +261,9 @@ def pull_security_master(
 
     rows: List[Dict[str, Any]] = []
     missing: List[str] = []
+    tlist = _to_upper_list(tickers)
 
-    for t in tqdm(_to_upper_list(tickers), desc="security master"):
+    for t in tqdm(tlist, desc="security master"):
         try:
             d = _retrying_call(cli.get_ticker_details, t)
             rows.append(_details_row(d, t, source="current"))
@@ -235,27 +278,8 @@ def pull_security_master(
             if fail_on_missing:
                 raise
 
-        for pdate in probe_dates:
-            try:
-                d = _retrying_call(cli.get_ticker_details, t, date=pdate)
-            except BadResponse as e:
-                if "Ticker not found" in str(e) or '"status":"NOT_FOUND"' in str(e):
-                    continue   # nobody held this ticker on that date
-                print(f"[warn] security master {t}@{pdate}: {str(e)[:200]}", file=sys.stderr)
-                continue
-            except Exception as e:
-                print(f"[warn] security master {t}@{pdate}: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
-                continue
-            row = _details_row(d, t, source=f"probe:{pdate}", anchor_date=pdate)
-            if row["holder_id"].startswith("NOFIGI__"):
-                # No FIGI and no CIK: cannot tell this holder apart from the current one, and a phantom second
-                # holder would split the ticker's history downstream. Skip it.
-                print(f"[warn] security master {t}@{pdate}: holder has neither FIGI nor CIK ({row['name']!r}); ignored",
-                      file=sys.stderr)
-                continue
-            rows.append(row)
-
-    df = _dedupe_holders(pd.DataFrame(rows, columns=SM_COLUMNS))
+    probes = probe_previous_holders(tlist, probe_dates, cli=cli) if probe_dates else pd.DataFrame(columns=SM_COLUMNS)
+    df = _dedupe_holders(pd.concat([pd.DataFrame(rows, columns=SM_COLUMNS), probes], ignore_index=True))
     out_parquet = Path(out_parquet)
     out_parquet.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_parquet, index=False)
