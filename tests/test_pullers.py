@@ -175,3 +175,40 @@ class TestHolderIds:
         out = pp.refine_windows(sm, hist)
         assert out["effective_start"].iloc[0] == pd.Timestamp("2022-06-09") and pd.isna(out["effective_end"].iloc[0])
         assert pp.refine_windows(sm, hist.iloc[0:0]).equals(sm)
+
+
+class TestEventsDerivedHolders:
+    EV = pd.DataFrame({"query_ticker": ["META", "META", "NVDA"], "holder_id": ["BBG000MM2P62", "BBG000MM2P62", "BBG000BBJQV0"],
+                       "composite_figi": ["BBG000MM2P62", "BBG000MM2P62", "BBG000BBJQV0"], "cik": ["0001326801", "0001326801", "0001045810"],
+                       "name": ["Meta Platforms", "Meta Platforms", "Nvidia Corp"], "event_type": "ticker_change",
+                       "date": pd.to_datetime(["2022-06-09", "2012-05-18", "2003-09-10"]), "ticker": ["META", "FB", "NVDA"]})
+
+    def test_holders_from_history_windows_and_confirmation(self):
+        h = pp.holders_from_history(self.EV, pp.symbol_history(self.EV)).set_index(["ticker", "holder_id"])
+        fb_row = h.loc[("FB", "BBG000MM2P62")]
+        assert fb_row["effective_start"] == pd.Timestamp("2012-05-18") and fb_row["effective_end"] == pd.Timestamp("2022-06-08")
+        assert bool(fb_row["start_confirmed"]) and bool(fb_row["end_confirmed"]) and fb_row["holder_source"] == "events"
+        assert fb_row["name"] == "Meta Platforms" and fb_row["cik"] == "0001326801"
+        meta_row = h.loc[("META", "BBG000MM2P62")]
+        assert meta_row["effective_start"] == pd.Timestamp("2022-06-09") and bool(meta_row["start_confirmed"]) and pd.isna(meta_row["effective_end"])
+        nvda = h.loc[("NVDA", "BBG000BBJQV0")]
+        assert nvda["effective_start"] == pp.HISTORY_START and not bool(nvda["start_confirmed"])   # data-start artifact
+
+    def test_merge_holders_confirmed_start_wins_over_list_date(self):
+        current = pd.DataFrame([{**{c: None for c in pp.SM_COLUMNS}, "ticker": "META", "holder_id": "BBG000MM2P62",
+                                 "holder_source": "current", "name": "Meta Platforms, Inc.", "list_date": pd.Timestamp("2012-05-18"),
+                                 "effective_start": pd.Timestamp("2012-05-18"), "effective_end": pd.NaT,
+                                 "start_confirmed": False, "end_confirmed": False}])
+        sm = pp.merge_holders(current, pp.holders_from_history(self.EV, pp.symbol_history(self.EV)))
+        meta = sm[sm["ticker"] == "META"].iloc[0]
+        assert meta["effective_start"] == pd.Timestamp("2022-06-09") and bool(meta["start_confirmed"])
+        assert meta["name"] == "Meta Platforms, Inc."                       # descriptive fields from the current row
+        assert sorted(sm["ticker"]) == ["FB", "META", "NVDA"]               # the FB window row was added
+
+    def test_open_end_beats_confirmed_delisting_of_same_company(self):
+        rows = [{**{c: None for c in pp.SM_COLUMNS}, "ticker": "RLST", "holder_id": "R1", "holder_source": "market:active",
+                 "effective_start": pd.NaT, "effective_end": pd.NaT, "start_confirmed": False, "end_confirmed": False},
+                {**{c: None for c in pp.SM_COLUMNS}, "ticker": "RLST", "holder_id": "R1", "holder_source": "market:delisted",
+                 "effective_start": pd.NaT, "effective_end": pd.Timestamp("2015-03-02"), "start_confirmed": False, "end_confirmed": True}]
+        out = pp._dedupe_holders(pd.DataFrame(rows))
+        assert len(out) == 1 and pd.isna(out["effective_end"].iloc[0]) and not bool(out["end_confirmed"].iloc[0])

@@ -17,7 +17,8 @@ from polygon_pullers import (
     pull_ticker_events,
     probe_previous_holders,
     symbol_history,
-    refine_windows,
+    holders_from_history,
+    merge_holders,
     load_api_key,
 )
 from polygon_pullers.bulk import make_fetch, pull_market_refdata, derive_collection_refdata
@@ -210,8 +211,10 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
         ev_df = pull_ticker_events(valid_tickers, out_parquet=str(outdir / "ticker_events.parquet"), api_key=api_key, api_key_file=None)
         hist = symbol_history(ev_df)
         hist.to_parquet(outdir / "ticker_symbol_history.parquet", index=False)
-        sm = refine_windows(pd.read_parquet(outdir / "security_master.parquet"), hist)
+        sm = merge_holders(pd.read_parquet(outdir / "security_master.parquet"), holders_from_history(ev_df, hist))
         sm.to_parquet(outdir / "security_master.parquet", index=False)
+        n_multi = int((sm.groupby("ticker")["holder_id"].nunique() > 1).sum())
+        print(f"  security master after events: {len(sm)} rows ({n_multi} ticker(s) with >1 holder)")
         aliases = hist[~hist["ticker"].isin(valid_tickers)]
         print(f"  events: {len(ev_df)} rows; symbol history: {len(hist)} rows" +
               (f"; {len(aliases)} former symbol(s) not in the watchlist, e.g. {aliases['ticker'].head(5).tolist()}" if len(aliases) else ""))
@@ -338,7 +341,9 @@ def main():
         note = (f"  ({len(aliases)} former symbol(s) not in the watchlist, e.g. {aliases['ticker'].head(5).tolist()}; "
                 f"add them to the ticker list to stitch that history)") if len(aliases) else ""
         print(f"Symbol history rows: {len(hist)} → {HIST_PARQUET}{note}")
-        sm_df = refine_windows(sm_df, hist)
+        # One security-master row per (holder, symbol) window: a company's rows under a former symbol are keyed
+        # to that company, and a confirmed adoption date stops a holder from claiming rows before it took the symbol.
+        sm_df = merge_holders(sm_df, holders_from_history(ev_df, hist))
         sm_df.to_parquet(SECMASTER_PARQUET, index=False)
     else:
         print("[2/4] Ticker events skipped (--skip-events)")

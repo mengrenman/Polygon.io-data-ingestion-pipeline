@@ -153,3 +153,58 @@ class TestNoCrossApplication:
         F = fb._build_split_factors(px_id, spl, stats={}, workers=1)
         assert px_id["id"].tolist() == ["NOFIGI__Q"] * 2
         assert sorted(F["split_price_factor"].tolist()) == pytest.approx([0.5, 1.0])
+
+
+# ---------------------------------------------------------------------------
+# Confirmed windows. A start/end from a real ticker change (or a delisting) is confirmed; list_date is not.
+# Single-holder tickers keep every row EXCEPT rows before a confirmed start or after a confirmed end,
+# which go to an unknown holder rather than to a company that did not hold the symbol then.
+# Live case: FB = Meta 2012-05-18..2022-06-08 (from META's ticker events), then a ProShares ETF from 2024.
+# ---------------------------------------------------------------------------
+META, ETF = "BBG000MM2P62", "BBG01VRMNFB1"
+SM_FB_ETF_ONLY = pd.DataFrame({          # what the tickers table alone knows: FB is the ETF, adopted 2024-11-13 (from its events)
+    "ticker": ["FB"], "composite_figi": [ETF], "cik": [None],
+    "effective_start": [D("2024-11-13")], "effective_end": [pd.NaT], "start_confirmed": [True], "end_confirmed": [False]})
+SM_FB_META_ONLY = pd.DataFrame({         # what META's ticker events add
+    "ticker": ["FB"], "composite_figi": [META], "cik": ["0001326801"],
+    "effective_start": [D("2012-05-18")], "effective_end": [D("2022-06-08")], "start_confirmed": [True], "end_confirmed": [True]})
+
+
+class TestConfirmedWindows:
+    FB_DAYS = ("2015-06-01", "2022-06-08", "2024-11-13", "2025-03-03")
+
+    def test_single_holder_with_confirmed_start_does_not_claim_earlier_rows(self):
+        out = fb._assign_holder_ids(_px("FB", *self.FB_DAYS), SM_FB_ETF_ONLY, "event_day").tolist()
+        assert out == ["NOFIGI__FB", "NOFIGI__FB", ETF, ETF]
+
+    def test_single_holder_with_confirmed_end_does_not_claim_later_rows(self):
+        out = fb._assign_holder_ids(_px("FB", *self.FB_DAYS), SM_FB_META_ONLY, "event_day").tolist()
+        assert out == [META, META, "NOFIGI__FB", "NOFIGI__FB"]
+
+    def test_both_holders_known_rows_split_at_the_symbol_change(self):
+        sm = pd.concat([SM_FB_ETF_ONLY, SM_FB_META_ONLY], ignore_index=True)
+        out = fb._assign_holder_ids(_px("FB", *self.FB_DAYS), sm, "event_day").tolist()
+        assert out == [META, META, ETF, ETF]
+
+    def test_unconfirmed_start_still_claims_everything(self):
+        # list_date-style start (unconfirmed): the old rule, so an imprecise date never splits a company's history
+        sm = SM_FB_ETF_ONLY.assign(start_confirmed=False)
+        assert fb._assign_holder_ids(_px("FB", *self.FB_DAYS), sm, "event_day").tolist() == [ETF] * 4
+
+    def test_normalize_sm_confirmed_start_wins_and_open_end_wins(self):
+        sm = pd.DataFrame({"ticker": ["META", "META", "RLST", "RLST"],
+                           "composite_figi": [META, META, "R1", "R1"], "cik": [None] * 4,
+                           "effective_start": [D("2012-05-18"), D("2022-06-09"), D("2000-01-03"), pd.NaT],
+                           "effective_end": [pd.NaT, pd.NaT, D("2015-03-02"), pd.NaT],
+                           "start_confirmed": [False, True, False, False], "end_confirmed": [False, False, True, False]})
+        n = fb._normalize_sm(sm).set_index("ticker")
+        assert n.loc["META", "effective_start"] == D("2022-06-09") and bool(n.loc["META", "start_confirmed"])
+        assert pd.isna(n.loc["RLST", "effective_end"]) and not bool(n.loc["RLST", "end_confirmed"])
+
+    def test_meta_rows_are_not_cut_by_data_start_artifact(self):
+        # a first event on Polygon's history start (2003-09-10) is NOT a confirmed adoption (NVDA/AAPL show it);
+        # with start_confirmed False the holder keeps rows before it
+        sm = pd.DataFrame({"ticker": ["NVDA"], "composite_figi": ["BBG000BBJQV0"], "cik": [None],
+                           "effective_start": [D("2003-09-10")], "effective_end": [pd.NaT],
+                           "start_confirmed": [False], "end_confirmed": [False]})
+        assert fb._assign_holder_ids(_px("NVDA", "1999-01-22", "2010-01-04"), sm, "event_day").tolist() == ["BBG000BBJQV0"] * 2

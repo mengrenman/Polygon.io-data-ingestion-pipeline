@@ -164,6 +164,7 @@ class TestDeriveCollection:
         gm = sm[sm["ticker"] == "GM"].set_index("holder_id")
         assert gm.loc["BBG000NDYB67", "holder_source"] == "market:active" and pd.isna(gm.loc["BBG000NDYB67", "effective_end"])
         assert gm.loc["CIK__0000040730", "effective_end"] == pd.Timestamp("2009-07-10") and pd.isna(gm.loc["CIK__0000040730", "effective_start"])
+        assert bool(gm.loc["CIK__0000040730", "end_confirmed"]) and not bool(gm.loc["BBG000NDYB67", "start_confirmed"])
 
         spl = pd.read_parquet(tmp_path / "coll" / "stock_splits.parquet")
         assert spl["ticker"].tolist() == ["NVDA", "NVDA"] and list(spl.columns) == ["ticker", "execution_date", "split_from", "split_to", "ratio"]

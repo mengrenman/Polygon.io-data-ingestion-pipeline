@@ -220,18 +220,35 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
             s[c] = pd.NA
     for c in ("effective_start", "effective_end", "anchor_date"):
         s[c] = _naive_dates(s[c]) if c in s.columns else pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    for c in ("start_confirmed", "end_confirmed"):
+        s[c] = s[c].fillna(False).astype(bool) if c in s.columns else False
     hid = s["holder_id"].astype("string")
     need = (hid.isna() | (hid.str.strip() == "")).to_numpy()
     s.loc[need, "holder_id"] = [_holder_id(f, k, t) for f, k, t in
                                 zip(s.loc[need, "composite_figi"], s.loc[need, "cik"], s.loc[need, "ticker"])]
     s["holder_id"] = s["holder_id"].astype(str)
+    cols = ["ticker", "holder_id", "effective_start", "effective_end", "anchor_date", "start_confirmed", "end_confirmed"]
     if s.empty:
-        return s[["ticker", "holder_id", "effective_start", "effective_end", "anchor_date"]]
-    return s.groupby(["ticker", "holder_id"], as_index=False).agg(
-        effective_start=("effective_start", "min"),
-        effective_end=("effective_end", "max"),
-        anchor_date=("anchor_date", "min"),
-    )
+        return s[cols]
+    rows = []
+    for (t, h), g in s.groupby(["ticker", "holder_id"]):
+        # same rules as polygon_pullers._dedupe_holders: a confirmed start (real ticker change) beats an
+        # unconfirmed list_date; an open end beats a stale delisted record of the same company
+        cs = g.loc[g["start_confirmed"], "effective_start"].dropna()
+        start = cs.min() if len(cs) else g["effective_start"].min()
+        if g["effective_end"].isna().any():
+            end = pd.NaT
+        else:
+            ce = g.loc[g["end_confirmed"], "effective_end"].dropna()
+            end = ce.max() if len(ce) else g["effective_end"].max()
+        rows.append({"ticker": t, "holder_id": h, "effective_start": start, "effective_end": end,
+                     "anchor_date": g["anchor_date"].min(),
+                     "start_confirmed": bool(g["start_confirmed"].any() and pd.notna(start)),
+                     "end_confirmed": bool(g["end_confirmed"].any() and pd.notna(end))})
+    out = pd.DataFrame(rows, columns=cols)
+    for c in ("effective_start", "effective_end", "anchor_date"):
+        out[c] = pd.to_datetime(out[c]).astype("datetime64[ns]")
+    return out
 
 
 def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.Series:
@@ -239,9 +256,11 @@ def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.
     Holder id for each row of `df` (needs 'ticker' and `date_col`), from the security master.
 
     - ticker unknown to the SM             -> 'NOFIGI__<TICKER>'
-    - one holder (one distinct id)         -> that id for every row, whatever the date. Windows only ever
-      disambiguate between holders, so an imprecise list_date can never split one company's history into two
-      ids (each id anchors its adjustment factors to its own last day, so a spurious split breaks continuity).
+    - one holder (one distinct id)         -> that id for every row, whatever the date, EXCEPT rows before a
+      CONFIRMED start or after a CONFIRMED end (a real ticker change / delisting from ticker events), which go
+      to 'NOFIGI__<TICKER>' (unknown previous/next holder) rather than to a company that did not hold the
+      symbol then. An imprecise list_date is never confirmed, so it can never split one company's history
+      (each id anchors its adjustment factors to its own last day, so a spurious split breaks continuity).
     - several holders (a recycled ticker)  -> the holder whose bounded window contains the date; a holder with
       no known dates (found by probing a date) takes what bounded holders don't claim; else the nearest window.
       Ties: the later effective_start.
@@ -257,10 +276,14 @@ def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.
         return pd.Series(out, index=df.index, dtype=object)
 
     n_holders = smn.groupby("ticker")["holder_id"].nunique()
-    single = smn[smn["ticker"].map(n_holders) == 1][["ticker", "holder_id"]]
+    single = smn[smn["ticker"].map(n_holders) == 1][["ticker", "holder_id", "effective_start", "effective_end",
+                                                        "start_confirmed", "end_confirmed"]]
     m1 = t.merge(single, on="ticker", how="left")
-    has = m1["holder_id"].notna().to_numpy()
-    out[has] = m1.loc[has, "holder_id"].to_numpy()
+    has = m1["holder_id"].notna()
+    before = has & m1["start_confirmed"].fillna(False).astype(bool) & m1["effective_start"].notna() & (m1["_d"] < m1["effective_start"])
+    after = has & m1["end_confirmed"].fillna(False).astype(bool) & m1["effective_end"].notna() & (m1["_d"] > m1["effective_end"])
+    take = (has & ~before & ~after).to_numpy()
+    out[take] = m1.loc[take, "holder_id"].to_numpy()
 
     multi = set(n_holders[n_holders > 1].index)
     tm = t[t["ticker"].isin(multi)]

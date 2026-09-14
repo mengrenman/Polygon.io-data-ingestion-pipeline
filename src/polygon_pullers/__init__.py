@@ -145,7 +145,11 @@ def _ts(x) -> pd.Timestamp:
 
 SM_COLUMNS = ["ticker", "holder_id", "holder_source", "name", "active", "type",
               "composite_figi", "share_class_figi", "cik", "locale", "currency_name", "primary_exchange", "market",
-              "list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated"]
+              "list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated",
+              "start_confirmed", "end_confirmed"]
+# Polygon's stock reference history starts here: a holder whose FIRST ticker event is on this date was simply
+# already trading (NVDA, AAPL, MSFT all show it), so such a start is NOT a real symbol adoption.
+HISTORY_START = pd.Timestamp("2003-09-10")
 
 
 def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, Any]:
@@ -173,6 +177,9 @@ def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, 
         "effective_end": _ts(getattr(d, "delisted_utc", None)),
         "anchor_date": _ts(anchor_date),
         "updated": _ts(getattr(d, "updated", None)),
+        # list_date is imprecise (IPO date, possibly under another symbol); only ticker events confirm a start
+        "start_confirmed": False,
+        "end_confirmed": bool(pd.notna(_ts(getattr(d, "delisted_utc", None)))),
     }
 
 
@@ -183,15 +190,28 @@ def _dedupe_holders(df: pd.DataFrame) -> pd.DataFrame:
         return df
     for c in ("list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated"):
         df[c] = pd.to_datetime(df[c], errors="coerce")
+    for c in ("start_confirmed", "end_confirmed"):
+        df[c] = df[c].fillna(False).astype(bool) if c in df.columns else False
     df = df.assign(_cur=(df["holder_source"] == "current").astype(int))
     df = df.sort_values(["ticker", "holder_id", "_cur"], ascending=[True, True, False])
-    agg = {c: "first" for c in SM_COLUMNS if c not in ("ticker", "holder_id", "effective_start", "effective_end", "anchor_date")}
-    # start: earliest known; end: open (NaT) wins - an active record and a stale delisted record of the same
-    # company must not close the holder's window; anchor: earliest probe date
-    agg.update(effective_start="min",
-               effective_end=lambda x: pd.NaT if x.isna().any() else x.max(),
-               anchor_date="min")
+    keyed = ("ticker", "holder_id", "effective_start", "effective_end", "anchor_date", "start_confirmed", "end_confirmed")
+    agg = {c: "first" for c in SM_COLUMNS if c not in keyed}
+    agg.update(anchor_date="min", start_confirmed="max", end_confirmed="max")
     out = df.groupby(["ticker", "holder_id"], as_index=False).agg(agg)
+    # Windows: a CONFIRMED start (real ticker change) wins over an unconfirmed list_date; an open end (NaT) wins
+    # over a stale delisted record of the same company (it is still trading), else the latest confirmed end.
+    win = []
+    for (t, h), g in df.groupby(["ticker", "holder_id"]):
+        cs = g.loc[g["start_confirmed"], "effective_start"].dropna()
+        start = cs.min() if len(cs) else g["effective_start"].min()
+        if g["effective_end"].isna().any():
+            end = pd.NaT
+        else:
+            ce = g.loc[g["end_confirmed"], "effective_end"].dropna()
+            end = ce.max() if len(ce) else g["effective_end"].max()
+        win.append({"ticker": t, "holder_id": h, "effective_start": start, "effective_end": end})
+    out = out.merge(pd.DataFrame(win), on=["ticker", "holder_id"], how="left")
+    out["end_confirmed"] = out["end_confirmed"] & out["effective_end"].notna()
     return out[SM_COLUMNS].sort_values(["ticker", "holder_source"]).reset_index(drop=True)
 
 
@@ -478,6 +498,48 @@ def symbol_history(events: pd.DataFrame) -> pd.DataFrame:
     return e[cols].reset_index(drop=True)
 
 
+def holders_from_history(events: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """
+    Security-master rows derived from ticker-change events: one per (holder, symbol) window from
+    symbol_history(). A company's rows under a FORMER symbol (Meta under FB, 2012-05-18 .. 2022-06-08) are
+    thereby keyed to that company even when the tickers table has no record of it (FB is now a ProShares
+    ETF). start_confirmed is True for a real adoption date (later than HISTORY_START); end_confirmed when the
+    symbol was later changed away. Merge into a security master with merge_holders().
+    """
+    if history is None or history.empty:
+        return pd.DataFrame(columns=SM_COLUMNS)
+    meta = (events.dropna(subset=["holder_id"]).drop_duplicates("holder_id").set_index("holder_id")
+            if events is not None and len(events) else pd.DataFrame())
+    rows: List[Dict[str, Any]] = []
+    for r in history.itertuples(index=False):
+        start, end = pd.to_datetime(r.start), pd.to_datetime(r.end)
+        m = meta.loc[r.holder_id] if (len(meta) and r.holder_id in meta.index) else None
+        row = {c: None for c in SM_COLUMNS}
+        row.update({
+            "ticker": str(r.ticker).strip().upper(), "holder_id": r.holder_id, "holder_source": "events",
+            "name": m["name"] if m is not None else None,
+            "composite_figi": m["composite_figi"] if m is not None else None,
+            "cik": m["cik"] if m is not None else None,
+            "effective_start": start, "effective_end": end, "anchor_date": pd.NaT,
+            "start_confirmed": bool(pd.notna(start) and start > HISTORY_START),
+            "end_confirmed": bool(pd.notna(end)),
+        })
+        rows.append(row)
+    df = pd.DataFrame(rows, columns=SM_COLUMNS)
+    for c in ("list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated"):
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+
+def merge_holders(sm: pd.DataFrame, extra: pd.DataFrame) -> pd.DataFrame:
+    """Union of security-master rows, one row per (ticker, holder) with windows merged by _dedupe_holders' rules."""
+    if extra is None or extra.empty:
+        return sm
+    if sm is None or sm.empty:
+        return _dedupe_holders(extra.copy())
+    return _dedupe_holders(pd.concat([sm, extra[SM_COLUMNS]], ignore_index=True))
+
+
 def refine_windows(sm: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
     """
     Tighten each security-master row's [effective_start, effective_end] to when that holder actually used
@@ -499,4 +561,8 @@ def refine_windows(sm: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
     out.loc[hs, "effective_start"] = out.loc[hs, ["effective_start", "start"]].max(axis=1)
     he = out["end"].notna()
     out.loc[he, "effective_end"] = out.loc[he, ["effective_end", "end"]].min(axis=1)
+    if "start_confirmed" in out.columns:
+        out.loc[hs & (out["start"] > HISTORY_START), "start_confirmed"] = True
+    if "end_confirmed" in out.columns:
+        out.loc[he, "end_confirmed"] = True
     return out.drop(columns=["start", "end"])
