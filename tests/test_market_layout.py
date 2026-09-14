@@ -132,3 +132,15 @@ class TestFactorBuilderLayouts:
         assert sorted(str(p.relative_to(tmp_path / "adj")) for p in (tmp_path / "adj").rglob("*.parquet")) == ["2024/01.parquet", "2024/02.parquet"]
         jan = pd.read_parquet(tmp_path / "adj" / "2024" / "01.parquet")
         assert jan["ticker"].tolist() == ["TOY", "TOY", "ZZZ"] and "YYYY" not in jan.columns
+
+
+class TestNaTicker:
+    def test_ticker_named_na_survives_ingest(self, tmp_path):
+        # "NA" (Nano Labs) is a real symbol; pandas' default NA tokens would drop it to a null ticker
+        src = tmp_path / "src"
+        _write_csv(src / "2024/06/2024-06-10.csv.gz", [f"NA,100,5,5,5,5,{_ns('2024-06-10 04:00')},1\n",
+                                                       f"TOY,100,1,1,1,1,{_ns('2024-06-10 04:00')},1\n"])
+        out = tmp_path / "lake"
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market")
+        df = pd.read_parquet(out / "2024" / "06.parquet")
+        assert df["ticker"].isna().sum() == 0 and df["ticker"].tolist() == ["NA", "TOY"]

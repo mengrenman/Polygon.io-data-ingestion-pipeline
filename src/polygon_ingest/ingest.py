@@ -302,7 +302,11 @@ def worker(
                 usecols=usecols,
                 dtype=dtypes,
                 compression="gzip",
-                chunksize=chunk
+                chunksize=chunk,
+                # Only an empty field is missing: pandas' default NA tokens include "NA", which is a real
+                # ticker (Nano Labs), and would silently turn every one of its rows into a null ticker.
+                keep_default_na=False,
+                na_values=[""],
             ):
                 rows_in += len(df)
 
