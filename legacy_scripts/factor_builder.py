@@ -220,7 +220,7 @@ def _holder_id(figi, cik, ticker) -> str:
         c = str(cik).strip()
         if c and c.lower() not in ("nan", "none", "<na>"):
             return "CIK__" + c
-    return "NOFIGI__" + str(ticker).strip().upper()
+    return "NOFIGI__" + str(ticker).strip()
 
 
 def _naive_dates(x: pd.Series) -> pd.Series:
