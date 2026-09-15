@@ -31,20 +31,26 @@ A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull
 ## Requirements
 
 - Python 3.10+ (tested on 3.12)
-- `pandas`, `pyarrow`, `tqdm`, `typer`, `polygon` (Polygon API client)
+- Runtime: `pandas`, `pyarrow`, `numpy`, `tqdm`, `typer`, `polygon-api-client` (all installed by `pip install -e .`)
+- Extras: `[dev]` → `pytest`; `[notebooks]` → `matplotlib`, `ipykernel`, `jupyterlab`, `lxml` (QA notebooks and the Wikipedia ticker-list script)
 
-Install in editable mode:
+Install in editable mode (venv):
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ".[dev,notebooks]"
 ```
 
-Run the regression tests (adjustment math, ET-date partitioning):
+or with conda (`environment.yml` provides the interpreter and installs the same extras):
 
 ```bash
-pip install -e ".[dev]"
+conda env create -f environment.yml && conda activate poly_ingest
+```
+
+Run the regression tests (adjustment math, holder ids, layouts, pullers, universe):
+
+```bash
 pytest
 ```
 
@@ -72,7 +78,7 @@ repo_polygonio/
 │  ├─ polygon_ingest/
 │  │  ├─ __init__.py
 │  │  ├─ ingest.py                       # CSV.GZ → Parquet lake (minute/day)
-│  │  ├─ cli.py                          # `poly` CLI entry (ingestion)
+│  │  ├─ cli.py                          # `poly bars` CLI entry (ingestion)
 │  │  ├─ lake_io.py                      # schema-safe readers for notebooks/QA
 │  │  └─ universe.py                     # point-in-time universe: segments, eligibility, membership
 │  │ 
