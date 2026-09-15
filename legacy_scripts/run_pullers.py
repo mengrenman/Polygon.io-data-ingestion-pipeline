@@ -220,6 +220,10 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
           f"splits: {summary['splits']} | dividends: {summary['dividends']} | missing tickers: {len(summary['missing'])}")
     if summary["missing"]:
         print(f"  missing: {outdir / '_missing_tickers.txt'} -> {summary['missing'][:10]}")
+    if summary.get("ambiguous_case"):
+        print(f"  {len(summary['ambiguous_case'])} list entr(ies) match more than one spelling and were skipped rather than "
+              f"guessed (Polygon's letter case is the share class): "
+              f"{', '.join(f'{k} -> {v}' for k, v in list(summary['ambiguous_case'].items())[:5])}")
     if summary["ambiguous_delisted"]:
         print(f"  {len(summary['ambiguous_delisted'])} ticker(s) have delisted records without FIGI/CIK (ignored; see "
               f"{outdir / '_ambiguous_delisted_records.csv'}). If one is a different company, add a --probe-dates "

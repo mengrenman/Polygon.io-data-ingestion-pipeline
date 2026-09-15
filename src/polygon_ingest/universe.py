@@ -35,7 +35,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .tickers import clean_list, resolve
+from .tickers import resolve
 
 DERIVATIVE_SUFFIX = re.compile(r"\.(U|UN|WS|W|WT|R|RT|RTS|P[A-Z]?|PR[A-Z]?)$")
 NASDAQ_5TH_LETTER_DERIVATIVE = re.compile(r"^[A-Z]{4}[WUR]$")
