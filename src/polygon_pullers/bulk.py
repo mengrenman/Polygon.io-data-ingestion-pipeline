@@ -21,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -46,10 +46,16 @@ OVERLAP_DAYS = 30   # incremental refresh re-fetches this much history; merged b
 # --------------------------
 # HTTP
 # --------------------------
-def make_fetch(api_key: str, *, retries: int = 8, timeout: float = 60.0) -> Fetch:
+MAX_BACKOFF_SEC = 60.0
+TRANSIENT_NETWORK_ERRORS = (urllib.error.URLError, TimeoutError, ConnectionError, OSError)   # URLError wraps DNS (gaierror)
+
+
+def make_fetch(api_key: str, *, retries: int = 15, timeout: float = 60.0) -> Fetch:
     """
-    GET -> JSON with pacing (POLYGON_MIN_INTERVAL_SEC), >= 12 s backoff per attempt on 429, exponential
-    backoff on 5xx / network errors. The key travels in the Authorization header, never in a URL or log.
+    GET -> JSON with pacing (POLYGON_MIN_INTERVAL_SEC); >= 12 s backoff per attempt on 429; exponential
+    backoff capped at MAX_BACKOFF_SEC on 5xx and on network errors (DNS failures, resets, timeouts) - a
+    multi-hour paged pull must outlast a several-minute network blip (15 retries ~ 9 minutes). The key
+    travels in the Authorization header, never in a URL or log.
     """
     def fetch(url: str, params: Optional[dict] = None) -> dict:
         q = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
@@ -63,12 +69,15 @@ def make_fetch(api_key: str, *, retries: int = 8, timeout: float = 60.0) -> Fetc
                     return json.loads(r.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 if i < retries and (e.code == 429 or e.code >= 500):
-                    time.sleep(max(_RATE_LIMIT_MIN_SLEEP_SEC, 0.5 * 2 ** i) if e.code == 429 else 0.5 * 2 ** i)
+                    time.sleep(max(_RATE_LIMIT_MIN_SLEEP_SEC, min(MAX_BACKOFF_SEC, 0.5 * 2 ** i)) if e.code == 429
+                               else min(MAX_BACKOFF_SEC, 0.5 * 2 ** i))
                     continue
                 raise
-            except (urllib.error.URLError, TimeoutError, ConnectionError):
+            except TRANSIENT_NETWORK_ERRORS as e:
                 if i < retries:
-                    time.sleep(0.5 * 2 ** i)
+                    wait = min(MAX_BACKOFF_SEC, 0.5 * 2 ** i)
+                    print(f"[bulk] network error ({type(e).__name__}: {str(e)[:80]}); retry {i + 1}/{retries} in {wait:.0f}s", file=sys.stderr)
+                    time.sleep(wait)
                     continue
                 raise
         raise RuntimeError("unreachable")
@@ -136,46 +145,95 @@ def pull_market_tickers(out_parquet: str | Path, fetch: Fetch, *, market: str = 
     return df
 
 
-def pull_market_splits(out_parquet: str | Path, fetch: Fetch, *, since: Optional[str] = None) -> pd.DataFrame:
-    """Every split (``execution_date >= since`` if given), merged by id into an existing table."""
-    params: Dict[str, Any] = {"limit": 1000, "order": "asc", "sort": "execution_date"}
-    if since:
-        params["execution_date.gte"] = str(since)[:10]
+CHECKPOINT_EVERY_PAGES = 25   # ~5 minutes of paced paging
+
+
+def _write_atomic(df: pd.DataFrame, out_parquet: Path) -> None:
+    out_parquet.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_parquet.with_suffix(".parquet.inprogress")
+    df.to_parquet(tmp, index=False)
+    tmp.replace(out_parquet)
+
+
+def _pull_paged_table(path: str, params: Dict[str, Any], out_parquet: Path, fetch: Fetch, *, label: str,
+                      columns: List[str], normalize, sort_cols: List[str],
+                      checkpoint_every: int = CHECKPOINT_EVERY_PAGES) -> pd.DataFrame:
+    """
+    Page through an endpoint sorted ascending by date and CHECKPOINT: every `checkpoint_every` pages (and on
+    any exception) the rows fetched so far are merged by id into the table on disk. Because pages arrive in
+    date order, everything before the table's latest date is complete, so a rerun resumes from that date
+    minus OVERLAP_DAYS (see _incremental_since) instead of starting over. A 5-hour pull that dies on a DNS
+    blip at page 1,580 therefore costs minutes, not hours, to finish.
+    """
+    out_parquet = Path(out_parquet)
+    existing = _read_or_empty(out_parquet, columns)
     rows: List[Dict[str, Any]] = []
-    for page in iter_results("/v3/reference/splits", params, fetch, label="splits"):
-        rows.extend({c: r.get(c) for c in SPLIT_COLS if c != "ratio"} for r in page)
-    new = pd.DataFrame(rows, columns=[c for c in SPLIT_COLS if c != "ratio"])
+    n_pages = 0
+
+    def flush() -> pd.DataFrame:
+        nonlocal existing, rows
+        if not rows:
+            return existing
+        new = normalize(pd.DataFrame(rows, columns=[c for c in columns if c in rows[0] or True]))
+        existing = _merge_by_id(existing, new[columns], sort_cols)
+        _write_atomic(existing, out_parquet)
+        rows = []
+        return existing
+
+    try:
+        for page in iter_results(path, params, fetch, label=label):
+            rows.extend({c: r.get(c) for c in columns} for r in page)
+            n_pages += 1
+            if checkpoint_every and n_pages % checkpoint_every == 0:
+                flush()
+    except BaseException:
+        if rows:
+            flush()
+            print(f"[bulk] {label}: interrupted after {n_pages} pages; progress checkpointed to {out_parquet} "
+                  f"(rerun resumes from the table's latest date - {OVERLAP_DAYS} days)", file=sys.stderr)
+        raise
+    return flush()
+
+
+def _normalize_splits(new: pd.DataFrame) -> pd.DataFrame:
+    new = new.copy()
     new["ticker"] = new["ticker"].astype(str).str.strip().str.upper()
     new["execution_date"] = pd.to_datetime(new["execution_date"], errors="coerce")
     sf = pd.to_numeric(new["split_from"], errors="coerce")
     st = pd.to_numeric(new["split_to"], errors="coerce")
     new["ratio"] = np.where((sf > 0) & st.notna(), st / sf, np.nan)
-    new = new[SPLIT_COLS]
-    out_parquet = Path(out_parquet)
-    df = _merge_by_id(_read_or_empty(out_parquet, SPLIT_COLS), new, ["ticker", "execution_date"])
-    out_parquet.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_parquet, index=False)
-    return df
+    return new[SPLIT_COLS]
 
 
-def pull_market_dividends(out_parquet: str | Path, fetch: Fetch, *, since: Optional[str] = None) -> pd.DataFrame:
-    """Every cash dividend (``ex_dividend_date >= since`` if given), merged by id into an existing table."""
-    params: Dict[str, Any] = {"limit": 1000, "order": "asc", "sort": "ex_dividend_date"}
-    if since:
-        params["ex_dividend_date.gte"] = str(since)[:10]
-    rows: List[Dict[str, Any]] = []
-    for page in iter_results("/v3/reference/dividends", params, fetch, label="dividends"):
-        rows.extend({c: r.get(c) for c in DIVIDEND_COLS} for r in page)
-    new = pd.DataFrame(rows, columns=DIVIDEND_COLS)
+def _normalize_dividends(new: pd.DataFrame) -> pd.DataFrame:
+    new = new.copy()
     new["ticker"] = new["ticker"].astype(str).str.strip().str.upper()
     for c in ("ex_dividend_date", "pay_date", "record_date", "declaration_date"):
         new[c] = pd.to_datetime(new[c], errors="coerce")
     new["cash_amount"] = pd.to_numeric(new["cash_amount"], errors="coerce")
-    out_parquet = Path(out_parquet)
-    df = _merge_by_id(_read_or_empty(out_parquet, DIVIDEND_COLS), new, ["ticker", "ex_dividend_date"])
-    out_parquet.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_parquet, index=False)
-    return df
+    return new[DIVIDEND_COLS]
+
+
+def pull_market_splits(out_parquet: str | Path, fetch: Fetch, *, since: Optional[str] = None,
+                       checkpoint_every: int = CHECKPOINT_EVERY_PAGES) -> pd.DataFrame:
+    """Every split (``execution_date >= since`` if given), merged by id into an existing table; checkpointed."""
+    params: Dict[str, Any] = {"limit": 1000, "order": "asc", "sort": "execution_date"}
+    if since:
+        params["execution_date.gte"] = str(since)[:10]
+    return _pull_paged_table("/v3/reference/splits", params, Path(out_parquet), fetch, label="splits",
+                             columns=SPLIT_COLS, normalize=_normalize_splits, sort_cols=["ticker", "execution_date"],
+                             checkpoint_every=checkpoint_every)
+
+
+def pull_market_dividends(out_parquet: str | Path, fetch: Fetch, *, since: Optional[str] = None,
+                          checkpoint_every: int = CHECKPOINT_EVERY_PAGES) -> pd.DataFrame:
+    """Every cash dividend (``ex_dividend_date >= since`` if given), merged by id into an existing table; checkpointed."""
+    params: Dict[str, Any] = {"limit": 1000, "order": "asc", "sort": "ex_dividend_date"}
+    if since:
+        params["ex_dividend_date.gte"] = str(since)[:10]
+    return _pull_paged_table("/v3/reference/dividends", params, Path(out_parquet), fetch, label="dividends",
+                             columns=DIVIDEND_COLS, normalize=_normalize_dividends, sort_cols=["ticker", "ex_dividend_date"],
+                             checkpoint_every=checkpoint_every)
 
 
 def _incremental_since(path: Path, date_col: str) -> Optional[str]:
@@ -185,23 +243,41 @@ def _incremental_since(path: Path, date_col: str) -> Optional[str]:
     return None if pd.isna(d) else (d - pd.Timedelta(days=OVERLAP_DAYS)).strftime("%Y-%m-%d")
 
 
+ALL_TABLES = ("tickers", "splits", "dividends")
+
+
 def pull_market_refdata(market_dir: str | Path, fetch: Fetch, *, since: Optional[str] = None,
-                        full: bool = False, tickers: bool = True) -> Dict[str, pd.DataFrame]:
+                        full: bool = False, tickers: bool = True,
+                        tables: Sequence[str] = ALL_TABLES) -> Dict[str, pd.DataFrame]:
     """
-    Pull / refresh the three market tables in ``market_dir``. Splits and dividends are incremental by
-    default (rows since the table's latest date minus OVERLAP_DAYS, merged by id); ``since`` overrides
-    that, ``full`` refetches everything. The tickers table is always refetched in full.
+    Pull / refresh the market tables in ``market_dir`` (``tables`` selects which; a table not selected is
+    read from disk if present). Splits and dividends are incremental by default (rows since the table's
+    latest date minus OVERLAP_DAYS, merged by id - which is also how an interrupted pull resumes); ``since``
+    overrides that, ``full`` refetches everything. The tickers table is always refetched in full.
     """
     market_dir = Path(market_dir)
     market_dir.mkdir(parents=True, exist_ok=True)
+    tables = tuple(tables)
+    unknown = set(tables) - set(ALL_TABLES)
+    if unknown:
+        raise ValueError(f"unknown tables {sorted(unknown)}; choose from {ALL_TABLES}")
     out: Dict[str, pd.DataFrame] = {}
-    if tickers:
+    if tickers and "tickers" in tables:
         out["tickers"] = pull_market_tickers(market_dir / MARKET_TICKERS, fetch)
-    s_since = None if full else (since or _incremental_since(market_dir / MARKET_SPLITS, "execution_date"))
-    d_since = None if full else (since or _incremental_since(market_dir / MARKET_DIVIDENDS, "ex_dividend_date"))
-    print(f"[bulk] splits since {s_since or 'the beginning'}; dividends since {d_since or 'the beginning'}", file=sys.stderr)
-    out["splits"] = pull_market_splits(market_dir / MARKET_SPLITS, fetch, since=s_since)
-    out["dividends"] = pull_market_dividends(market_dir / MARKET_DIVIDENDS, fetch, since=d_since)
+    elif (market_dir / MARKET_TICKERS).exists():
+        out["tickers"] = pd.read_parquet(market_dir / MARKET_TICKERS)
+    if "splits" in tables:
+        s_since = None if full else (since or _incremental_since(market_dir / MARKET_SPLITS, "execution_date"))
+        print(f"[bulk] splits since {s_since or 'the beginning'}", file=sys.stderr)
+        out["splits"] = pull_market_splits(market_dir / MARKET_SPLITS, fetch, since=s_since)
+    elif (market_dir / MARKET_SPLITS).exists():
+        out["splits"] = pd.read_parquet(market_dir / MARKET_SPLITS)
+    if "dividends" in tables:
+        d_since = None if full else (since or _incremental_since(market_dir / MARKET_DIVIDENDS, "ex_dividend_date"))
+        print(f"[bulk] dividends since {d_since or 'the beginning'}", file=sys.stderr)
+        out["dividends"] = pull_market_dividends(market_dir / MARKET_DIVIDENDS, fetch, since=d_since)
+    elif (market_dir / MARKET_DIVIDENDS).exists():
+        out["dividends"] = pd.read_parquet(market_dir / MARKET_DIVIDENDS)
     return out
 
 

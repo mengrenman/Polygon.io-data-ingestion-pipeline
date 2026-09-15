@@ -211,3 +211,86 @@ class TestDeriveCollection:
         assert pd.isna(sm["effective_end"].iloc[0]), "the active record's open end must win over the stale delisted one"
         px = pd.DataFrame({"ticker": "RLST", "event_day": pd.to_datetime(["2010-01-04", "2020-01-02"])})
         assert fb._assign_holder_ids(px, sm, "event_day").tolist() == ["BBGRLST0001"] * 2
+
+
+# ---------------------------------------------------------------------------
+# Resumable pulls. Pages arrive in date order and are checkpointed to disk, so an interrupted pull keeps
+# its progress and the next run resumes from the table's latest date minus the overlap.
+# ---------------------------------------------------------------------------
+def _div_rows(start_id: int, n: int, first_date: str):
+    d0 = pd.Timestamp(first_date)
+    return [{"id": f"d{start_id + i}", "ticker": f"T{(start_id + i) % 7}", "ex_dividend_date": (d0 + pd.Timedelta(days=start_id + i)).strftime("%Y-%m-%d"),
+             "pay_date": None, "record_date": None, "declaration_date": None, "cash_amount": 0.1, "currency": "USD", "frequency": 4, "dividend_type": "CD"}
+            for i in range(n)]
+
+
+class TestResumablePulls:
+    def test_interrupted_pull_checkpoints_and_resumes(self, tmp_path):
+        import urllib.error
+        pages = [_div_rows(0, 3, "2020-01-01"), _div_rows(3, 3, "2020-01-01"), _div_rows(6, 3, "2020-01-01"), _div_rows(9, 3, "2020-01-01")]
+        out = tmp_path / "market_dividends.parquet"
+
+        # run 1: the network dies while fetching page 3 (after pages 1-2 were delivered); checkpoint every page
+        calls = {"n": 0}
+        def flaky(url, params=None):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise urllib.error.URLError("nodename nor servname provided")
+            i = 0 if "cursor=" not in url else int(url.split("cursor=")[1])
+            return {"results": pages[i], "next_url": f"{bulk.BASE}/x?cursor={i + 1}" if i + 1 < len(pages) else None}
+        with pytest.raises(urllib.error.URLError):
+            bulk.pull_market_dividends(out, flaky, checkpoint_every=1)
+        partial = pd.read_parquet(out)
+        assert len(partial) == 6 and partial["id"].tolist() == [f"d{i}" for i in range(6)]      # pages 1-2 survived
+
+        # run 2: resumes from the table's latest date minus the overlap, merges by id, completes
+        since = bulk._incremental_since(out, "ex_dividend_date")
+        assert since == (pd.Timestamp("2020-01-01") + pd.Timedelta(days=5) - pd.Timedelta(days=bulk.OVERLAP_DAYS)).strftime("%Y-%m-%d")
+        seen = {}
+        def good(url, params=None):
+            if params: seen.update(params)
+            i = 0 if "cursor=" not in url else int(url.split("cursor=")[1])
+            return {"results": pages[i], "next_url": f"{bulk.BASE}/x?cursor={i + 1}" if i + 1 < len(pages) else None}
+        df = bulk.pull_market_dividends(out, good, since=since, checkpoint_every=1)
+        assert seen["ex_dividend_date.gte"] == since
+        assert len(df) == 12 and df["id"].is_unique and sorted(df["id"]) == sorted(f"d{i}" for i in range(12))
+        assert not out.with_suffix(".parquet.inprogress").exists()                            # atomic writes
+
+    def test_pull_market_refdata_can_skip_tables(self, tmp_path):
+        series = {"/v3/reference/tickers|true": [ACTIVE], "/v3/reference/tickers|false": [DELISTED],
+                  "/v3/reference/splits": [SPLITS], "/v3/reference/dividends": [DIVS]}
+        bulk.pull_market_refdata(tmp_path, fake_fetch_from(series))            # all three
+        fetch = fake_fetch_from(series)
+        out = bulk.pull_market_refdata(tmp_path, fetch, tables=("dividends",))
+        paths = {u.split("?")[0].replace(bulk.BASE, "") for u, _ in fetch.calls}
+        assert paths == {"/v3/reference/dividends"}                            # tickers/splits not refetched ...
+        assert set(out) == {"tickers", "splits", "dividends"}                  # ... but still returned from disk
+        with pytest.raises(ValueError):
+            bulk.pull_market_refdata(tmp_path, fetch, tables=("bogus",))
+
+    def test_make_fetch_retries_dns_failures_with_capped_backoff(self, monkeypatch):
+        import urllib.error
+        sleeps, attempts = [], {"n": 0}
+        monkeypatch.setattr(bulk.time, "sleep", lambda s: sleeps.append(s))
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"status":"OK","results":[]}'
+
+        def urlopen(req, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] <= 9:
+                raise urllib.error.URLError("nodename nor servname provided, or not known")
+            return Resp()
+
+        monkeypatch.setattr(bulk.urllib.request, "urlopen", urlopen)
+        assert bulk.make_fetch("k")(bulk.BASE + "/v3/reference/dividends", None)["results"] == []
+        assert attempts["n"] == 10 and len(sleeps) == 9 and max(sleeps) == bulk.MAX_BACKOFF_SEC and sum(sleeps) == pytest.approx(183.5)
+
+    def test_make_fetch_gives_up_eventually(self, monkeypatch):
+        import urllib.error
+        monkeypatch.setattr(bulk.time, "sleep", lambda s: None)
+        monkeypatch.setattr(bulk.urllib.request, "urlopen", lambda req, timeout=None: (_ for _ in ()).throw(urllib.error.URLError("down")))
+        with pytest.raises(urllib.error.URLError):
+            bulk.make_fetch("k", retries=3)(bulk.BASE + "/v3/reference/dividends", None)

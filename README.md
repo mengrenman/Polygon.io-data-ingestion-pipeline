@@ -241,7 +241,7 @@ This pulls **market-wide** reference tables once — a few hundred requests in t
 | `market_dividends.parquet` — every cash dividend, with `id` | `cash_dividends.parquet` |
 | | `_missing_tickers.txt`, `_ticker_normalization_map.csv` |
 
-Re-running is **incremental**: splits and dividends are fetched from the latest date already held minus 30 days and merged by `id`; the tickers table is refreshed in full. Pass `--full` (via `bash scripts/pull_ref_data.sh --full`) to refetch everything.
+Re-running is **incremental**: splits and dividends are fetched from the latest date already held minus 30 days and merged by `id`; the tickers table is refreshed in full. Pass `--full` (via `bash scripts/pull_ref_data.sh --full`) to refetch everything. The same mechanism makes a long pull **resumable**: pages arrive in date order and are checkpointed to the table every 25 pages (and on any error), so if a multi-hour dividends pull dies on a network blip, rerunning `bash scripts/pull_ref_data.sh --tables dividends` continues from where it stopped instead of starting over (`--tables` skips refetching the other tables).
 
 A **holder** is the company behind a ticker, `holder_id` = composite FIGI → `CIK__<cik>` → `NOFIGI__<TICKER>`. A recycled symbol (General Motors Corp until 2009, General Motors Company from 2010-11-18) appears in the tickers table as one active and one delisted record and becomes two holders with a window boundary at the delisting date, so the second company's splits and dividends never touch the first one's prices. If the previous company was *renamed* before delisting, its delisted record is under its final symbol; use probe dates for those:
 
@@ -310,6 +310,9 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
 
 - **`POLYGON_API_KEY` not found**  
   Put it in `.env` (repo root) or export it in your shell. `scripts/pull_ref_data.sh` auto-loads `.env`.
+
+- **Step 4 died with `URLError` / `gaierror` (DNS or connection failure) after hours of paging**  
+  Progress is checkpointed; rerun `bash scripts/pull_ref_data.sh --tables dividends` (or `splits`) and it resumes from the table's latest date minus 30 days. Network errors are retried for ~9 minutes before giving up.
 
 - **`429` / `Too Many Requests` during Step 4**  
   Your Polygon plan is rate-limited (the free tier allows 5 requests/minute). The default bulk mode needs only a few hundred requests in total; pace them with
