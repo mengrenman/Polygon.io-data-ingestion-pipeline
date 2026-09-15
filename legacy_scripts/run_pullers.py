@@ -166,8 +166,11 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
     fetch = make_fetch(api_key)
     probe_dates = [x.strip() for x in args.probe_dates.split(",") if x.strip()] if args.probe_dates else None
 
-    print(f"[1/3] Market tables -> {market_dir}" + (" (full refetch)" if args.full else " (incremental)"))
-    tables = pull_market_refdata(market_dir, fetch, since=args.since, full=args.full)
+    which = tuple(t.strip() for t in args.tables.split(",") if t.strip())
+    print(f"[1/3] Market tables {list(which)} -> {market_dir}" + (" (full refetch)" if args.full else " (incremental / resume)"))
+    tables = pull_market_refdata(market_dir, fetch, since=args.since, full=args.full, tables=which)
+    if "tickers" not in tables:
+        raise SystemExit(f"no tickers table in {market_dir}; run with --tables tickers first")
     tk = tables["tickers"]
     print(f"  tickers: {len(tk)} rows ({int(tk['active'].fillna(False).astype(bool).sum())} active) | "
           f"splits: {len(tables['splits'])} rows | dividends: {len(tables['dividends'])} rows")
@@ -262,6 +265,9 @@ def main():
                     help="Bulk mode: refetch all splits/dividends instead of an incremental refresh.")
     ap.add_argument("--events", action="store_true",
                     help="Bulk mode: also pull per-ticker ticker events (1 request per ticker) for symbol history.")
+    ap.add_argument("--tables", type=str, default="tickers,splits,dividends",
+                    help="Bulk mode: which market tables to pull (comma-separated). Others are read from disk. "
+                         "E.g. --tables dividends to finish an interrupted dividends pull without refetching tickers.")
     args = ap.parse_args()
 
     outdir = args.outdir.resolve()
