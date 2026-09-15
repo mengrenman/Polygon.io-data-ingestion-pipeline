@@ -129,7 +129,7 @@ def _select_from_manifest(
 
     sel: List[Path] = []
     seen: set[str] = set()
-    tset = {str(t).upper() for t in tickers}
+    tset = {str(t).strip() for t in tickers}   # the case is the share class; see polygon_ingest.tickers
 
     for t in tset:
         for ent in man.get(t, []):
@@ -163,8 +163,8 @@ def select_lake_files(
 
     Returns: list[Path]
     """
-    # Normalize inputs
-    tickers = [str(t).upper() for t in tickers]
+    # Normalize inputs (whitespace only: Polygon's letter case carries the share class)
+    tickers = [str(t).strip() for t in tickers]
     root = Path(root)
 
     s = pd.to_datetime(start_date)
@@ -238,7 +238,7 @@ def load_polygonio_lake(
     - If `manifest` is given, selects files via manifest; otherwise walks the lake.
     - `show_progress` controls tqdm bars (default False for import-friendly usage).
     """
-    tickers = [str(t).upper() for t in tickers]
+    tickers = [str(t).strip() for t in tickers]
 
     # Bounds for row filtering (reuse select_lake_files parsing rules)
     s = pd.to_datetime(start_date)
@@ -322,7 +322,7 @@ def load_polygonio_lake(
     # Filter rows by time range & tickers
     df = df[(df["datetime"] >= s) & (df["datetime"] <= e)]
     if "ticker" in df.columns:
-        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df["ticker"] = df["ticker"].astype(str)
         df = df[df["ticker"].isin(set(tickers))]
 
     # Sort & index

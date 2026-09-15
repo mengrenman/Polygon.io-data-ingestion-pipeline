@@ -15,7 +15,8 @@ if "execution_date" not in spl.columns:
     raise SystemExit("stock_splits.parquet missing 'execution_date'")
 
 spl["execution_date"] = pd.to_datetime(spl["execution_date"])
-spl["ticker"] = spl["ticker"].astype(str).str.upper()
+# spelled as Polygon does: the case is the share class, and it has to match the lake's directories
+spl["ticker"] = spl["ticker"].astype(str).str.strip()
 
 # group by ticker and emit a ±14d window around each split date
 delta = pd.Timedelta(days=14)

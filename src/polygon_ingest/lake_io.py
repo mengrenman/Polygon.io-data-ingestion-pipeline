@@ -59,6 +59,11 @@ os.environ.setdefault("PYARROW_NUM_THREADS", "2")
 
 import pandas as pd
 from pandas.api.types import is_datetime64tz_dtype
+
+try:
+    from .tickers import clean_list, resolve
+except ImportError:      # running this file directly, as the CLI at the bottom allows
+    from tickers import clean_list, resolve
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
@@ -76,6 +81,33 @@ def _month_range(start: dt.date, end: dt.date) -> List[tuple[int,int]]:
         if m == 12: y, m = y + 1, 1
         else: m += 1
     return out
+
+def _lake_symbols(root: Path) -> List[str]:
+    """The symbols a ticker-layout lake holds, as its directory names spell them."""
+    return [p.name for p in root.iterdir() if p.is_dir()] if root.is_dir() else []
+
+
+def _resolve_against_lake(tickers: Iterable[str], root: Path, layout: str, debug: bool = False) -> List[str]:
+    """Requested symbols mapped onto the spellings the lake actually uses.
+
+    Polygon's letter case is the share class (`AAp` is Alcoa's preferred, not Advance Auto Parts),
+    so an exact match always wins and `AAP` never drags in `AAp`. A ticker-layout lake names a
+    directory per symbol, which makes its spellings cheap to read, so a request in the wrong case
+    still resolves when only one spelling could have been meant. A market-layout lake keeps every
+    symbol inside the parquet files, so there is nothing cheap to resolve against and the request
+    is used as spelled.
+    """
+    requested = clean_list(tickers)
+    if layout != "ticker":
+        return requested
+    mapping, unresolved, ambiguous = resolve(requested, _lake_symbols(root))
+    if debug and (unresolved or ambiguous):
+        if unresolved:
+            print(f"[DEBUG] not in {root}: {unresolved[:10]}")
+        for r, cands in ambiguous.items():
+            print(f"[DEBUG] {r!r} could mean {cands} - different securities; ask for one by its exact spelling")
+    return [mapping[r] for r in requested if r in mapping]
+
 
 def _list_files_day(root: Path, tickers: Iterable[str], s: dt.date, e: dt.date) -> List[Path]:
     """Monthly parquet per ticker/year/month: <root>/<TICKER>/<YYYY>/<MM>.parquet"""
@@ -158,7 +190,9 @@ def _select_from_manifest(
 
     sel: List[Path] = []
     seen: set[str] = set()
-    tset = {str(t).upper() for t in tickers}
+    # the manifest is keyed by the lake's own spellings, so resolve against those
+    mapping, _, _ = resolve(tickers, man.keys())
+    tset = set(mapping.values())
 
     for t in tset:
         for ent in man.get(t, []):
@@ -195,11 +229,11 @@ def select_lake_files(
 
     Returns: list[Path]
     """
-    # Normalize inputs
-    tickers = [str(t).upper() for t in tickers]
+    # Symbols keep their spelling; only the match against the lake normalises case (see _resolve_against_lake)
     root = Path(root)
     if layout == "auto":
         layout = detect_layout(root)
+    tickers = _resolve_against_lake(tickers, root, layout, debug=debug)
 
     s = pd.to_datetime(start_date)
     e = pd.to_datetime(end_date)
@@ -278,7 +312,7 @@ def load_polygonio_lake(
     - If `manifest` is given, selects files via manifest; otherwise walks the lake.
     - `show_progress` controls tqdm bars (default False for import-friendly usage).
     """
-    tickers = [str(t).upper() for t in tickers]
+    tickers = clean_list(tickers)
 
     # Bounds for row filtering (reuse select_lake_files parsing rules)
     s = pd.to_datetime(start_date)
@@ -299,7 +333,8 @@ def load_polygonio_lake(
     # Choose files
     if layout == "auto":
         layout = detect_layout(root)
-    filters = [("ticker", "in", list(dict.fromkeys(tickers)))] if layout == "market" else None
+    tickers = _resolve_against_lake(tickers, Path(root), layout, debug=debug)
+    filters = [("ticker", "in", tickers)] if layout == "market" else None
     files = select_lake_files(
         tickers, start_date, end_date, root,
         granularity=granularity,
@@ -315,7 +350,7 @@ def load_polygonio_lake(
         want = set(tickers); kept = []
         for f in files:
             idx = read_day_index(f)
-            if idx is None or bool(set(idx["ticker"].astype(str).str.upper()) & want):
+            if idx is None or bool(set(idx["ticker"].astype(str)) & want):
                 kept.append(f)
         files = kept
 
@@ -375,7 +410,7 @@ def load_polygonio_lake(
     # Filter rows by time range & tickers
     df = df[(df["datetime"] >= s) & (df["datetime"] <= e)]
     if "ticker" in df.columns:
-        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df["ticker"] = df["ticker"].astype(str)
         df = df[df["ticker"].isin(set(tickers))]
 
     # Sort & index
@@ -488,12 +523,14 @@ if "load_series" not in globals() or "load_events" not in globals():
         """(paths, ticker_filter): per-ticker layout -> that ticker's files, no filter;
         market layout (<root>/<YYYY>/...) -> all files, filter rows to the ticker on read."""
         root = _Path(root)
-        base = root / str(ticker).upper()
+        # a ticker-layout lake spells the symbol in its directory name, so resolve against those
+        spelling = (_resolve_against_lake([ticker], root, "ticker") or [str(ticker).strip()])[0]
+        base = root / spelling
         if base.exists():
             return (sorted(base.glob("*/*/*.parquet")) if tf == "minute" else sorted(base.glob("*/*.parquet"))), None
         if root.is_dir() and any(p.is_dir() and len(p.name) == 4 and p.name.isdigit() for p in root.iterdir()):
             paths = sorted(root.glob("*/*/*.parquet")) if tf == "minute" else sorted(root.glob("*/*.parquet"))
-            return [p for p in paths if not p.name.endswith(".idx.parquet")], str(ticker).upper()
+            return [p for p in paths if not p.name.endswith(".idx.parquet")], str(ticker).strip()
         return [], None
 
     def _file_cols(path: _Path) -> set[str]:
@@ -591,9 +628,9 @@ if "load_series" not in globals() or "load_events" not in globals():
         splits = _pd.read_parquet(sp) if sp.exists() else _pd.DataFrame()
         divs   = _pd.read_parquet(dv) if dv.exists() else _pd.DataFrame()
 
-        # --- standardize ticker casing if present
-        if "ticker" in splits: splits["ticker"] = splits["ticker"].astype(str).str.upper()
-        if "ticker" in divs:   divs["ticker"]   = divs["ticker"].astype(str).str.upper()
+        # --- ticker as a plain string; the case is Polygon's and carries the share class
+        if "ticker" in splits: splits["ticker"] = splits["ticker"].astype(str)
+        if "ticker" in divs:   divs["ticker"]   = divs["ticker"].astype(str)
 
         # --- helper to normalize a date column under a canonical name
         def _ensure_dt(df: _pd.DataFrame, candidates: list[str], outcol: str):
@@ -620,8 +657,8 @@ if "load_series" not in globals() or "load_events" not in globals():
             keep = ["ticker","ex_date","cash_amount","pay_date","declaration_date","record_date","frequency"]
             divs = divs[[c for c in keep if c in divs.columns]]
 
-        # filter by ticker if the column exists
-        tkey = str(ticker).upper()
+        # filter by ticker if the column exists (exact: the refdata uses Polygon's own spelling)
+        tkey = str(ticker).strip()
         if "ticker" in splits:
             splits = splits[splits["ticker"] == tkey].reset_index(drop=True)
         if "ticker" in divs:
