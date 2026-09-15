@@ -119,11 +119,14 @@ repo_polygonio/
 │  ├─ day/all_adjusted/<YYYY>/<MM>.parquet          # market layout, every ticker, holder `id` per row
 │  └─ minute/all_adjusted/<YYYY>/<MM>/<DD>.parquet  # market layout (+ <DD>.idx.parquet)
 │
-├─ notebooks/
-│  ├─ 01_index_universes.ipynb
-│  ├─ 02_extract_tickers.ipynb
-│  └─ 03_load_data_inspect_adjustment.ipynb  # QA: unadj vs split-adj vs TR
-├─ tests/                                # pytest, 100 tests: adjustment math, holder ids, layouts, pullers, universe
+├─ notebooks/                            # all executed against the real lakes, outputs committed
+│  ├─ 01_index_universes.ipynb           # today's SPX/NDX lists (survivorship biased — see 05)
+│  ├─ 02_extract_tickers.ipynb           # every symbol in the flat files, case preserved
+│  ├─ 03_load_data_inspect_adjustment.ipynb  # QA: unadj vs split-adj vs TR, with assertions
+│  ├─ 04_lake_inventory_and_quality.ipynb    # EDA: coverage, calendar, data-quality findings
+│  ├─ 05_universe_and_survivorship.ipynb     # EDA: point-in-time universe, survivorship priced
+│  └─ 06_minute_lake_access.ipynb            # EDA: reading 7 bn rows, sidecars, intraday profile
+├─ tests/                                # pytest, 112 tests: adjustment math, holder ids, layouts, pullers, universe
 └─ figures/adjust.png                    # README QA figure, built from real refdata
 ```
 
@@ -323,9 +326,32 @@ The day **batch** path splits the holders over `--workers` processes; each one r
 
 ---
 
-## Notebook / QA and research usage
+## Notebooks
 
-Use `notebooks/03_load_data_inspect_adjustment.ipynb` to load and plot:
+Six notebooks, all executed against the real lakes with their outputs committed, so they read as a
+report as well as running as code. They take the lake root from `POLYGON_LAKE_ROOT` (and the flat
+files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothing hard-codes a path.
+
+| Notebook | What it is for |
+|---|---|
+| `01_index_universes` | Build today's S&P 500 / Nasdaq-100 lists. Writes to `data/ticker_lists/refreshed/` rather than over the committed lists, and shows a year of index drift. |
+| `02_extract_tickers` | Every symbol in the flat files, survivorship free. Explains why ticker case must be preserved and why `NA` needs `keep_default_na=False`. |
+| `03_load_data_inspect_adjustment` | QA one symbol: unadjusted vs `close_sa` vs `close_tr`, with five assertions that fail on a wrongly-signed or unanchored total-return factor. |
+| `04_lake_inventory_and_quality` | What is in every lake, calendar and bar-level integrity, and the data-quality findings below. |
+| `05_universe_and_survivorship` | The point-in-time universe: liquidity bar, turnover, and survivorship bias measured in return terms. |
+| `06_minute_lake_access` | How to read 7 billion minute rows: layouts, `.idx.parquet` sidecars, measured read costs, intraday volume profile. |
+
+**Known data issues these surfaced** (both filed as follow-up work, neither is fixed in the lakes yet):
+
+- **Ticker casing.** Polygon encodes share class in letter case (`AAp` is Alcoa's preferred, distinct
+  from `AAP` common; `AANw` is a warrant). `polygon_ingest` upper-cases on ingest, so about 90 symbols
+  carry two securities' bars: 29,258 duplicated ticker-days, 0.13% of the day lake. Until it is fixed,
+  de-duplicate on `(ticker, date)` keeping the higher-volume row, as notebook 04 does.
+- **Exchange test symbols.** A few dozen lake tickers have no reference row; `ZVZZT` and friends quote
+  near $200,000 and rank first by dollar volume in 167 of the universe's 262 months. Exclude them
+  (`--exclude-tickers` on the universe build) before any return study.
+
+Notebook 03 loads and plots:
 - **Unadjusted `close`**
 - **Split-adjusted `close_sa`**
 - **Total-return `close_tr`**
@@ -376,7 +402,8 @@ Group by `id` (the company), not by `ticker`: a recycled symbol's two companies 
   Adjusted lakes store `datetime` as tz-naive **UTC** (the unadjusted lakes are tz-aware US/Eastern). `load_series` handles both; when calling `load_polygonio_lake` on an adjusted lake pass `source_tz="UTC"`.
 
 - **Empty plots / empty merges**  
-  Double-check notebook paths match your lakes. For **day**, both lakes must overlap on dates.
+  Set `POLYGON_LAKE_ROOT` so the notebooks find your lakes; they fall back to the repo-local `lake/`
+  and `lake_adj/` folders. For **day**, both lakes must overlap on dates.
 
 - **Missing `close_sa` in adjusted files**  
   Build with `-m ohlc`. The loader also maps `close_split → close_sa` when present.

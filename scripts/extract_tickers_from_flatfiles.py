@@ -16,18 +16,27 @@ def detect_ticker_col(header: Iterable[str]) -> str | None:
     return None
 
 def sample_tickers(csvgz: Path, ticker_col: str, nrows: int) -> list[str]:
+    """Tickers in one flat file, exactly as Polygon writes them.
+
+    Two details that are easy to get wrong and both lose real symbols:
+
+    * ``keep_default_na=False`` - pandas would otherwise read the ticker ``NA`` (Nano Labs) as a
+      null and drop it.
+    * no ``.upper()`` - Polygon encodes share class in letter case (``AAp`` is Alcoa's preferred,
+      distinct from ``AAP``; ``AANw`` is a warrant), so upper-casing merges different securities.
+    """
     try:
         df = pd.read_csv(
             csvgz,
             usecols=[ticker_col],
             compression="gzip",
             dtype={ticker_col: "string"},
-            nrows=nrows
+            keep_default_na=False,
+            na_values=[""],
+            nrows=nrows or None,          # 0 / None -> read the whole file
         )
-        s = df[ticker_col].dropna().astype(str).str.upper()
-        # remove trailing commas or extra tokens if present
-        s = s.str.split(",", n=1, expand=True)[0].str.strip()
-        return s.tolist()
+        s = df[ticker_col].dropna().astype(str).str.strip()
+        return s[s.str.len() > 0].tolist()
     except Exception:
         return []
 
@@ -37,7 +46,9 @@ def main():
     ap.add_argument("--outdir", type=Path, default=Path("data/ticker_lists"))
     ap.add_argument("--name", type=str, default="all_polygonio_tickers", help="base filename for outputs")
     ap.add_argument("--pattern", type=str, default="*.csv.gz", help="glob pattern to match files")
-    ap.add_argument("--nrows", type=int, default=5000, help="rows to sample per file")
+    ap.add_argument("--nrows", type=int, default=0,
+                    help="rows to read per file; 0 (default) reads every row. A small sample misses "
+                         "any symbol that sorts late in the file, so only use it for a quick look.")
     ap.add_argument("--limit-files", type=int, default=0, help="optional cap on number of files scanned")
     args = ap.parse_args()
 

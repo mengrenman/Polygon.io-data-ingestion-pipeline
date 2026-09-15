@@ -1,27 +1,31 @@
 #!/usr/bin/env python
 from __future__ import annotations
-import argparse, sys
+import argparse, io, json, sys
 from pathlib import Path
 import pandas as pd
 import urllib.request
 
-def fetch_html(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+# Wikipedia rejects urllib's default agent with HTTP 403, so identify the client.
+USER_AGENT = "polygonio-ingestion-pipeline/1.0 (ticker list builder)"
+
+def fetch_tables(url: str) -> list[pd.DataFrame]:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=20) as r:
-        return r.read()
+        html = r.read().decode("utf-8", errors="replace")
+    return pd.read_html(io.StringIO(html))          # StringIO: read_html no longer accepts a raw string
 
 def parse_tickers_from_tables(tables, candidates=("Symbol","Ticker","Ticker symbol")):
-    # Find the first table with a likely ticker column
+    """First table with a ticker-like column -> sorted unique symbols in POLYGON form.
+
+    Polygon writes share classes with a dot (`BRK.B`, `BF.B`), which is also how Wikipedia writes
+    them, so the symbol is passed through unchanged. An earlier version rewrote `.` to `-`, which
+    silently produced tickers that match nothing in the lake.
+    """
     for tbl in tables:
         for c in candidates:
             if c in tbl.columns:
-                col = c
-                s = tbl[col].astype(str)
-                # normalize: BRK.B -> BRK-B
-                s = s.str.strip().str.upper().str.replace(".", "-", regex=False)
-                # some rows contain notes separated by spaces/slashes—take the first token
-                s = s.str.split().str[0]
-                # drop empties
+                s = tbl[c].astype(str).str.strip().str.upper()
+                s = s.str.split().str[0]            # some cells carry a trailing footnote
                 s = s[s.str.len() > 0]
                 return sorted(s.unique())
     raise ValueError("No ticker-like column found in any table")
@@ -30,16 +34,24 @@ def build(outdir: Path) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     # S&P 500
-    spx_html = fetch_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-    spx_tables = pd.read_html(spx_html)
-    spx = parse_tickers_from_tables(spx_tables, candidates=("Symbol","Ticker"))
+    spx = parse_tickers_from_tables(fetch_tables("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"),
+                                    candidates=("Symbol","Ticker"))
     pd.Series(spx).to_csv(outdir / "spx.txt", index=False, header=False)
     pd.Series(spx).to_json(outdir / "spx.json", orient="values")
 
-    # Nasdaq-100
-    ndx_html = fetch_html("https://en.wikipedia.org/wiki/Nasdaq-100")
-    ndx_tables = pd.read_html(ndx_html)
-    ndx = parse_tickers_from_tables(ndx_tables, candidates=("Ticker","Ticker symbol"))
+    # Nasdaq-100. Wikipedia removed the constituents table from this article, so the scrape can
+    # legitimately fail; fall back to a previously saved list rather than aborting the whole build.
+    try:
+        ndx = parse_tickers_from_tables(fetch_tables("https://en.wikipedia.org/wiki/Nasdaq-100"),
+                                        candidates=("Ticker","Ticker symbol","Symbol"))
+    except Exception as e:
+        prev = outdir / "ndx.json"
+        legacy = outdir / "nasdaq100.json"
+        src = prev if prev.exists() else (legacy if legacy.exists() else None)
+        if src is None:
+            raise ValueError(f"Nasdaq-100 table unavailable ({e}) and no saved list at {prev} or {legacy}") from e
+        ndx = sorted(json.loads(src.read_text()))
+        print(f"[WARN] Nasdaq-100 scrape failed ({e}); reused {src} ({len(ndx)} tickers)", file=sys.stderr)
     pd.Series(ndx).to_csv(outdir / "ndx.txt", index=False, header=False)
     pd.Series(ndx).to_json(outdir / "ndx.json", orient="values")
 
