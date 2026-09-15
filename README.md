@@ -341,15 +341,16 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
 | `05_universe_and_survivorship` | The point-in-time universe: liquidity bar, turnover, and survivorship bias measured in return terms. |
 | `06_minute_lake_access` | How to read 7 billion minute rows: layouts, `.idx.parquet` sidecars, measured read costs, intraday volume profile. |
 
-**Known data issues these surfaced** (both filed as follow-up work, neither is fixed in the lakes yet):
+**Known data issues.** Found by the notebooks and by a read-only audit of the published files; each line says whether it is fixed.
 
-- **Ticker casing.** Polygon encodes share class in letter case (`AAp` is Alcoa's preferred, distinct
-  from `AAP` common; `AANw` is a warrant). `polygon_ingest` upper-cases on ingest, so about 90 symbols
-  carry two securities' bars: 29,258 duplicated ticker-days, 0.13% of the day lake. Until it is fixed,
-  de-duplicate on `(ticker, date)` keeping the higher-volume row, as notebook 04 does.
-- **Exchange test symbols.** A few dozen lake tickers have no reference row; `ZVZZT` and friends quote
-  near $200,000 and rank first by dollar volume in 167 of the universe's 262 months. Exclude them
-  (`--exclude-tickers` on the universe build) before any return study.
+| Issue | Status |
+|---|---|
+| **Recycled symbols inherited today's company.** A symbol reassigned to a new company kept one holder `id` for its whole history, so `ARM` bars from 2003 were credited to Arm Holdings (listed 2023), and the new owner's splits were applied to the old owner's bars. | **Fixed.** The adjuster now cuts each ticker's history where it stopped trading for 60 days or more and gives the earlier segments their own id (`NOFIGI__<TICKER>#SEG<n>`), and re-keys corporate actions onto those segments. Only tickers with an unconfirmed security-master start are touched. See `--recycle-gap-days`. |
+| **Ticker casing merged different securities.** Polygon encodes share class in letter case (`AAp` is Alcoa's preferred, distinct from `AAP`; `AANw` is a warrant) and the pipeline upper-cased, so about 90 symbols carried two securities' bars over 29,258 ticker-days. | **Fixed in the adjuster**, which now preserves case everywhere and folds case only when matching a watchlist. The ingester and the reference pullers are being fixed separately; **the built lakes still carry the defect until they are re-ingested**, so de-duplicate on `(ticker, date)` keeping the higher-volume row. |
+| **Exchange test symbols.** `ZVZZT`, `ZEXIT` and 117 others quote at synthetic prices (up to $200,000, and $889 M of notional in one day) and have no reference row, so they ranked first by dollar volume in 167 of the universe's 262 months. | **Fixed.** Listed in `data/ticker_lists/exchange_test_symbols.json` and excluded from the point-in-time universe build. Exclude them from any cross-sectional study. |
+| **Bad ticks in the source data.** Polygon's own files carry occasional bad prints, and a daily aggregate inherits them: `SIRI` on 2007-06-13 has close 25.55 against a true range of 2.75 to 2.80, because of one 22.29 print at 15:50. `SMS` 2008-03-20 has a $0.01 low against a $26 stock. | **Not fixable in the pipeline** — the raw file is wrong. Screen on a sane high/low ratio and a minimum price before computing returns. |
+| **Timezone differs between lakes.** Adjusted lakes store `datetime` tz-naive **UTC**; unadjusted lakes store tz-aware **US/Eastern**. Joining the two without converting misaligns every row. | **By design, handled by the loaders.** `load_series` reconciles it; pass `source_tz="UTC"` to `load_polygonio_lake` on an adjusted lake. |
+| **The 16:00 minute bar is not the official close.** The daily `open` equals the 09:30 minute bar's open for every ticker, but the daily `close` is the official closing price and the 16:00 minute bar's close is only the last print inside that minute — they agree for 52.7% of the market, median gap 13 bp. | **Expected.** Use the daily file for the official close; never mix a daily price with a minute price in one ratio. |
 
 Notebook 03 loads and plots:
 - **Unadjusted `close`**
