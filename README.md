@@ -15,7 +15,7 @@ A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull
 - Reproducible **unadjusted** lakes (minute/day).
 - **Refdata** in a few hundred requests for any universe size: market-wide tickers (active + delisted), splits and dividends tables, refreshed incrementally; collection files derived by filtering. **Holder ids** (FIGI → CIK → ticker) keep a recycled ticker's previous company separate.
 - **Adjusted** lakes (split-adjusted OHLC/VWAP/Volume + total-return).
-- Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles.
+- Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles, and a **point-in-time universe** builder (membership per rebalance date from trailing dollar volume; survivorship-free).
 - A schema-safe loader module for notebooks/QA plots.
 
 > **Pipeline steps**
@@ -73,7 +73,8 @@ repo_polygonio/
 │  │  ├─ __init__.py
 │  │  ├─ ingest.py                       # CSV.GZ → Parquet lake (minute/day)
 │  │  ├─ cli.py                          # `poly` CLI entry (ingestion)
-│  │  └─ lake_io.py                      # schema-safe readers for notebooks/QA
+│  │  ├─ lake_io.py                      # schema-safe readers for notebooks/QA
+│  │  └─ universe.py                     # point-in-time universe: segments, eligibility, membership
 │  │ 
 │  └─ polygon_pullers/
 │     ├─ __init__.py                     # per-ticker pullers (details/events/splits/dividends), holder ids
@@ -87,6 +88,7 @@ repo_polygonio/
 │  └─ polygon_lake_loader.py             # optional CLI shim using lake_io
 │
 ├─ scripts/
+│  ├─ build_pit_universe.py              # point-in-time universe (membership per rebalance date)
 │  ├─ build_adjusted_lake.sh             # unified builder (minute/day)
 │  ├─ pull_ref_data.sh                   # wrapper to run `run_pullers.py` (loads .env)
 │  ├─ build_index_universes.py           # build SPX/NDX/combined ticker lists
@@ -130,7 +132,7 @@ $HOME/data/polygonio_data/flatfiles/
 
 ### Step 2 — Build ticker lists
 
-**Option A — Build SPX/NDX/Combined from Wikipedia**
+**Option A — Build SPX/NDX/Combined from Wikipedia** (today's constituents — survivorship-biased when applied to history; see Option C)
 ```bash
 python scripts/build_index_universes.py --outdir data/ticker_lists
 # writes: data/ticker_lists/{spx,ndx,spx_ndx_combined}.{json,txt}
@@ -144,6 +146,20 @@ python scripts/extract_tickers_from_flatfiles.py \
   --name all_polygonio_tickers
 # writes: data/ticker_lists/all_polygonio_tickers.{json,txt}
 ```
+
+**Option C — Point-in-time universe (use this for research).** Options A and B are *static* lists. Today's S&P 500 applied back to 2003 contains only the companies that survived and grew into the index — the textbook look-ahead / survivorship bias — while the flat files themselves are survivorship-free (Lehman, Bear Stearns, Washington Mutual, the old GM are all in them). Build membership **per rebalance date from data available on that date** instead:
+
+```bash
+# needs the whole-universe day lake (Step 3, --layout market) and the market tickers table (Step 4)
+python scripts/build_pit_universe.py \
+  --lake ./lake/day/all \
+  --market-tickers refdata/_market/market_tickers.parquet \
+  --out data/universes/top1000_cs_monthly \
+  --top-n 1000 --min-price 1 --exclude-tickers QQQ,VXX --emit-watchlist \
+  --static-list data/ticker_lists/spx_ndx_combined.json     # optional: quantify what the static list misses
+```
+
+Each month-end, eligible common stocks are ranked by trailing 63-day dollar volume and the top N are members; a ticker must have traded within the last 5 days and have ≥ 40 observations in the window (fresh listings excluded). Recycled symbols are handled by splitting a ticker's history at trading gaps of ≥ 60 days (exchange-listed names print daily; Bear Stearns → an ETN under `BSC` took 69 days): the tickers table describes the *current* holder, so its type applies to the last segment only, and earlier segments are admitted unless the symbol looks like a derivative (`--untyped-policy`). That recovers Bear Stearns, Meta under `FB`, Wachovia, Sun, DirecTV — and also a fund that came back to its own symbol (QQQ 2003–04, VXX), which no table field can tell apart; `summary.json` lists the admitted untyped segments for review and `--exclude-tickers QQQ,VXX` removes them by hand. Outputs: `membership.parquet` (rebalance_date, ticker, rank, adv_usd, …), `segments.parquet`, `summary.json` (members per year, share of members that are no longer an active common stock today, share missing from the static list) and, with `--emit-watchlist`, `watchlist.json` — the union of all members, usable as `--watch` for a minute ingest. Use `polygon_ingest.universe.expand_daily()` to get the membership on every trading day. The universe is a **membership table you join at research time**, not an ingest filter: build the adjusted lake for the whole `day/all` lake (bulk refdata covers every ticker) and filter by (date, ticker) afterwards. Live result on 2003–2025: 262 rebalances, 4,171 distinct members; 55 % of the 2003 members are no longer an active common stock today.
 
 ---
 
