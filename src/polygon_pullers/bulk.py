@@ -243,6 +243,8 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
         "effective_end": src["delisted_utc"],           # NaT for the active holder
         "anchor_date": pd.NaT,
         "updated": src["last_updated_utc"],
+        "start_confirmed": False,                       # the list endpoint carries no adoption date
+        "end_confirmed": src["delisted_utc"].notna(),   # a delisting date is a real end
     })[SM_COLUMNS]
     if extra_holders is not None and len(extra_holders):
         sm = pd.concat([sm, extra_holders[SM_COLUMNS]], ignore_index=True)
