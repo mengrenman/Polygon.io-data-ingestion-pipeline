@@ -31,3 +31,6 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# refreshed ticker lists written by notebooks/01 (the committed lists define the built lakes)
+data/ticker_lists/refreshed/
