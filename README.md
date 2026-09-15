@@ -285,7 +285,7 @@ Defaults when `-p` / `-o` are omitted. Note these point at `~/data/...`, **not**
 - Unadjusted input (`-p`): `~/data/polygonio_data/parquet_lake/<tf>_aggs_v1/<collection>`
 - Adjusted output (`-o`): `~/data/polygonio_data/parquet_lake/<tf>_aggs_v1/<collection>_adjusted`
 - Refdata: `refdata/<collection>/` (derived from `-c`)
-- Workers: `-w` defaults to 90 (day mode); lower it to roughly your core count
+- Workers: `-w` defaults to the machine's core count (day mode: one process per slice of holders)
 
 `-m` (`--materialize`) options:
 - `minimal` → only what’s needed (e.g., `close_tr`)
@@ -319,7 +319,7 @@ python legacy_scripts/factor_builder.py \
   --adjust both --materialize ohlc --write-workers 8 --stream-read-workers 8
 ```
 
-The day **batch** path loads the whole lake into memory (46 M rows ≈ 25 GB peak); minute lakes use the **streaming** path, one day file at a time. Flags worth knowing: `-r/--refdir` and `-L/--layout` on the wrapper (`--refdir`, `--layout` on the builder), and `--detect-split-gaps`, which infers a split from an overnight price gap for tickers with no splits row — **off by default**, because on the full market it fires on warrants and penny stocks and the market splits table already holds every real split.
+The day **batch** path splits the holders over `--workers` processes; each one reads, adjusts and writes its own slice end to end (a renamed company's tickers always share a slice), so reading and writing scale with cores and each process holds about 1/N of the lake (`--workers 1` is the single-process reference path, ≈ 25 GB for the full market). Minute lakes use the **streaming** path, one day file at a time, with `--write-workers` processes. Flags worth knowing: `-r/--refdir` and `-L/--layout` on the wrapper (`--refdir`, `--layout` on the builder), and `--detect-split-gaps`, which infers a split from an overnight price gap for tickers with no splits row — **off by default**, because on the full market it fires on warrants and penny stocks and the market splits table already holds every real split.
 
 ---
 
