@@ -56,6 +56,7 @@ from typing import Optional, Sequence, Tuple, Dict, List, Literal
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -212,6 +213,16 @@ def _flushable(bucket_keys: List[tuple], cur: Tuple[int, ...], tf: Tf) -> List[t
     return out
 
 
+def day_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-ticker index of a ticker-major minute day file: first/last close, row count and row positions.
+    Written as <DD>.idx.parquet next to market-layout minute files so an adjuster can scan a day's edges
+    without reading the data columns, and readers can skip files a ticker is absent from."""
+    pos = np.arange(len(df))
+    g = pd.DataFrame({"ticker": df["ticker"].to_numpy(), "close": df["close"].to_numpy(), "_pos": pos}).groupby("ticker", sort=True)
+    return g.agg(first_close=("close", "first"), last_close=("close", "last"), n_rows=("close", "size"),
+                 row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
+
+
 def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf, layout: Layout) -> None:
     """Write one bucket: ticker layout <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet, market layout <out>/<YYYY>/<MM>[/<DD>].parquet."""
     base_cols = ["datetime", "ticker", "open", "high", "low", "close", "volume", "transactions", "vwap", "yr_et", "mo_et"] + (["day_et"] if tf == "minute" else [])
@@ -243,6 +254,8 @@ def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf,
     else:
         pq.write_table(table, fout_tmp, compression="zstd")
     fout_tmp.replace(fout)
+    if layout == "market" and tf == "minute" and "close" in final.columns:
+        day_index(final.reset_index(drop=True)).to_parquet(outdir / f"{name}.idx.parquet", index=False)
 
 
 # ── worker (minute/day via tf switch) ─────────────────────────────────────────
@@ -432,7 +445,7 @@ def build_manifest(out_root: Path, manifest_path: Path, logger=None, workers: in
     pairs: List[tuple[str, Path]] = []
     if layout == "market":
         # one key for the whole lake; each entry carries the date range of an all-ticker file
-        pairs = [("__market__", p) for p in sorted(out_root.rglob("*.parquet"))]
+        pairs = [("__market__", p) for p in sorted(out_root.rglob("*.parquet")) if not p.name.endswith(".idx.parquet")]
     else:
         for ticker_dir in sorted(p for p in out_root.iterdir() if p.is_dir()):
             ticker = ticker_dir.name

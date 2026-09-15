@@ -119,13 +119,19 @@ def _list_files_day_market(root: Path, s: dt.date, e: dt.date) -> List[Path]:
     return [f for yy, mm in _month_range(s, e) if (f := root / f"{yy:04d}" / f"{mm:02d}.parquet").exists()]
 
 def _list_files_minute_market(root: Path, s: dt.date, e: dt.date) -> List[Path]:
-    """Market layout, minute: <root>/<YYYY>/<MM>/<DD>.parquet (all tickers)."""
+    """Market layout, minute: <root>/<YYYY>/<MM>/<DD>.parquet (all tickers). Skips .idx.parquet sidecars."""
     files: List[Path] = []
     for yy, mm in _month_range(s, e):
         ddir = root / f"{yy:04d}" / f"{mm:02d}"
         if ddir.exists():
-            files.extend(Path(p) for p in glob.glob(str(ddir / "*.parquet")))
+            files.extend(Path(p) for p in glob.glob(str(ddir / "*.parquet")) if not p.endswith(".idx.parquet"))
     return [f for f in files if s <= dt.date(int(f.parent.parent.name), int(f.parent.name), int(f.stem)) <= e]
+
+def read_day_index(day_file: str | Path) -> Optional[pd.DataFrame]:
+    """The per-ticker sidecar (<DD>.idx.parquet: ticker, first_close, last_close, n_rows, row_start, row_end)
+    of a market-layout minute day file, or None if the file has none."""
+    p = Path(day_file); ip = p.with_name(p.stem + ".idx.parquet")
+    return pd.read_parquet(ip) if ip.exists() else None
 
 # ───────────────────────── manifest-aware selection ──────────────────────────
 def _safe_parse_ts(x: Any, source_tz: str) -> pd.Timestamp:
@@ -304,6 +310,15 @@ def load_polygonio_lake(
         layout=layout,
     )
 
+    if layout == "market" and granularity == "minute" and files:
+        # sidecar fast path: skip day files none of the requested tickers appear in
+        want = set(tickers); kept = []
+        for f in files:
+            idx = read_day_index(f)
+            if idx is None or bool(set(idx["ticker"].astype(str).str.upper()) & want):
+                kept.append(f)
+        files = kept
+
     if not files:
         if debug:
             src = f"manifest:{manifest}" if manifest else f"root:{root}"
@@ -477,7 +492,8 @@ if "load_series" not in globals() or "load_events" not in globals():
         if base.exists():
             return (sorted(base.glob("*/*/*.parquet")) if tf == "minute" else sorted(base.glob("*/*.parquet"))), None
         if root.is_dir() and any(p.is_dir() and len(p.name) == 4 and p.name.isdigit() for p in root.iterdir()):
-            return (sorted(root.glob("*/*/*.parquet")) if tf == "minute" else sorted(root.glob("*/*.parquet"))), str(ticker).upper()
+            paths = sorted(root.glob("*/*/*.parquet")) if tf == "minute" else sorted(root.glob("*/*.parquet"))
+            return [p for p in paths if not p.name.endswith(".idx.parquet")], str(ticker).upper()
         return [], None
 
     def _file_cols(path: _Path) -> set[str]:

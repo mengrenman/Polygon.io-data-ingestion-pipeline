@@ -77,7 +77,8 @@ class TestMarketIngest:
                                                        f"ZZZ,300,3,3,3,3,{_ns('2024-01-16 14:31')},7\n"])
         out = tmp_path / "lake"
         ingest.run_ingest("minute", src, out, workers=1, quiet_console=True, layout="market")
-        assert sorted(str(p.relative_to(out)) for p in out.rglob("*.parquet")) == ["2024/01/15.parquet", "2024/01/16.parquet"]
+        data_files = [p for p in out.rglob("*.parquet") if not p.name.endswith(".idx.parquet")]   # sidecars aside
+        assert sorted(str(p.relative_to(out)) for p in data_files) == ["2024/01/15.parquet", "2024/01/16.parquet"]
         d16 = pd.read_parquet(out / "2024/01/16.parquet")
         assert d16["ticker"].tolist() == ["TOY", "ZZZ"]
 

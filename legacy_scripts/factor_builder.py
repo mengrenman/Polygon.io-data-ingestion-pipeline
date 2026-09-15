@@ -11,6 +11,8 @@ from typing import Optional, List, Iterable, Tuple, Dict, Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as _pq
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
@@ -1105,6 +1107,181 @@ def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, 
     return pd.concat(out, ignore_index=True)
 
 
+# =============================================================
+# Streaming helpers (minute mode, MARKET layout: <root>/<YYYY>/<MM>/<DD>.parquet, all tickers per file)
+# =============================================================
+ROW_GROUP_SIZE_MARKET = 131_072
+
+def _day_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-ticker index of a ticker-major minute day file: first/last close, row count and row positions.
+    Mirrors polygon_ingest.ingest.day_index (kept local so this script stays standalone)."""
+    pos = np.arange(len(df))
+    g = pd.DataFrame({"ticker": df["ticker"].to_numpy(), "close": df["close"].to_numpy(), "_pos": pos}).groupby("ticker", sort=True)
+    idx = g.agg(first_close=("close", "first"), last_close=("close", "last"), n_rows=("close", "size"),
+                row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
+    return idx
+
+def _index_path(day_file: Path) -> Path:
+    return day_file.with_name(day_file.stem + ".idx.parquet")
+
+def _iter_minute_market_files(root: Path, start: Optional[str] = None, end: Optional[str] = None) -> List[Tuple[Path, pd.Timestamp]]:
+    """(path, event_day) for every <root>/<YYYY>/<MM>/<DD>.parquet, filtered to [start, end]."""
+    root = Path(root); out = []
+    s = pd.Timestamp(start) if start else None; e = pd.Timestamp(end) if end else None
+    for f in sorted(root.glob("*/*/*.parquet")):
+        if f.name.endswith(".idx.parquet"):
+            continue
+        try:
+            day = pd.Timestamp(int(f.parent.parent.name), int(f.parent.name), int(f.stem)).normalize().as_unit("ns")
+        except Exception:
+            continue
+        if (s is not None and day < s) or (e is not None and day > e):
+            continue
+        out.append((f, day))
+    return out
+
+def _read_day_index(path: Path, tickers: Optional[set] = None) -> pd.DataFrame:
+    """Per-ticker first/last close for one market minute day file: the .idx.parquet sidecar written by the
+    ingester when present, else computed from the file (ticker + close columns; ~0.2 s for 1.4 M rows)."""
+    ip = _index_path(Path(path))
+    if ip.exists():
+        idx = pd.read_parquet(ip)
+    else:
+        cols = ["ticker", "close"] + (["datetime"] if "datetime" in _pq.ParquetFile(path).schema_arrow.names else [])
+        df = pd.read_parquet(path, columns=cols)
+        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        if "datetime" in df.columns:
+            df = df.sort_values(["ticker", "datetime"])
+        idx = _day_index(df)
+    idx["ticker"] = idx["ticker"].astype(str).str.strip().str.upper()
+    if tickers is not None:
+        idx = idx[idx["ticker"].isin(tickers)]
+    return idx
+
+def _scan_day_edges_market(files: List[Tuple[Path, pd.Timestamp]], tickers: Optional[List[str]] = None,
+                           threads: int = 8) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    One read per day file (not per ticker): returns
+      days_df (ticker, path, event_day)  - which tickers traded on which day, for _attach_id_days
+      edges   (ticker, event_day, first_close, last_close, prev_last, raw_gap) - for split-gap detection and the
+              dividend prior-day base, same columns as _scan_day_edges.
+    """
+    tset = set(t.strip().upper() for t in tickers) if tickers else None
+    parts = []
+    def one(item):
+        f, day = item
+        idx = _read_day_index(f, tset)
+        return idx.assign(event_day=day, path=str(f))
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+        futs = [ex.submit(one, it) for it in files]
+        for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Scanning market day files (threads x{threads})"):
+            parts.append(fut.result())
+    all_ = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["ticker", "first_close", "last_close", "event_day", "path"])
+    days_df = all_[["ticker", "path", "event_day"]].sort_values(["ticker", "event_day"]).reset_index(drop=True)
+    edges = all_[["ticker", "event_day", "first_close", "last_close"]].sort_values(["ticker", "event_day"]).reset_index(drop=True)
+    edges["prev_last"] = edges.groupby("ticker")["last_close"].shift(1)
+    edges["raw_gap"] = edges["first_close"] / edges["prev_last"]
+    return days_df, edges
+
+def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int,
+                                 materialize: str, tickers: Optional[List[str]] = None, debug_dump: Optional[Path] = None) -> None:
+    """Per day file: read once, join that day's factors and holder ids by ticker, write the adjusted day file in
+    the same market layout (ticker-major, row groups, .idx.parquet sidecar). Replaces the per-(ticker, file)
+    loop of _stream_write_minutes, which would open each day file once per ticker."""
+    FG = F.merge(G, on=["ticker", "event_day"], how="outer")
+    for c in ("split_price_factor", "split_volume_factor", "tr_price_factor"):
+        FG[c] = FG[c].fillna(1.0)
+    if debug_dump is not None:
+        debug_dump.mkdir(parents=True, exist_ok=True)
+        FG.to_csv(debug_dump / "_factormap.csv", index=False)
+    fg_by_day = {d: g[["ticker", "split_price_factor", "split_volume_factor", "tr_price_factor"]] for d, g in FG.groupby("event_day")}
+    id_by_day = {d: g[["ticker", "id"]].drop_duplicates("ticker") for d, g in id_days.groupby("event_day")}
+    files = id_days[["path", "event_day"]].drop_duplicates("path").itertuples(index=False)
+    tlist = sorted(set(t.strip().upper() for t in tickers)) if tickers else None
+
+    def one(path: str, day) -> int:
+        df = pd.read_parquet(path, filters=[("ticker", "in", tlist)] if tlist else None)
+        if "T" in df.columns and "ticker" not in df.columns:
+            df = df.rename(columns={"T": "ticker"})
+        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        if tlist:
+            df = df[df["ticker"].isin(tlist)]
+        if df.empty:
+            return 0
+        for a, b in (("c", "close"), ("v", "volume"), ("o", "open"), ("h", "high"), ("l", "low")):
+            if b not in df.columns and a in df.columns:
+                df = df.rename(columns={a: b})
+        df["datetime"] = _to_naive_utc(df["datetime"]) if "datetime" in df.columns else pd.Timestamp(day)
+        fg = fg_by_day.get(day); ids = id_by_day.get(day)
+        df = df.merge(fg, on="ticker", how="left") if fg is not None else df.assign(split_price_factor=1.0, split_volume_factor=1.0, tr_price_factor=1.0)
+        for c in ("split_price_factor", "split_volume_factor", "tr_price_factor"):
+            df[c] = df[c].fillna(1.0)
+        df = df.merge(ids, on="ticker", how="left") if ids is not None else df.assign(id=pd.NA)
+        df["id"] = df["id"].where(df["id"].notna(), "NOFIGI__" + df["ticker"])
+        sp, sv, tr = df["split_price_factor"], df["split_volume_factor"], df["tr_price_factor"]
+        df["close_split"] = df["close"] * sp
+        df["volume_split"] = df["volume"] * sv
+        if materialize == "ohlc":
+            for col in ("open", "high", "low"):
+                if col in df.columns:
+                    df[f"{col}_split"] = df[col] * sp
+        df["close_tr"] = df["close_split"] * tr
+        if materialize == "ohlc":
+            for col in ("open_split", "high_split", "low_split"):
+                if col in df.columns:
+                    df[col.replace("_split", "_tr")] = df[col] * tr
+        df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
+        cols = _select_columns_to_write(df, materialize)
+        d = pd.Timestamp(day)
+        outpath = outdir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}.parquet"
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+        tmp = outpath.with_suffix(".parquet.inprogress")
+        _pq.write_table(pa.Table.from_pandas(df[cols], preserve_index=False), tmp, compression="zstd", row_group_size=ROW_GROUP_SIZE_MARKET)
+        tmp.replace(outpath)
+        _day_index(df).to_parquet(_index_path(outpath), index=False)
+        return len(df)
+
+    items = list(files)
+    if write_workers <= 1:
+        for it in tqdm(items, desc="Writing minute lake (market layout)"):
+            one(it.path, it.event_day)
+    else:
+        with ThreadPoolExecutor(max_workers=write_workers) as ex:
+            futs = [ex.submit(one, it.path, it.event_day) for it in items]
+            for _ in tqdm(as_completed(futs), total=len(futs), desc=f"Writing minute lake (market layout x{write_workers})"):
+                _.result()
+
+def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, outdir: Path, *,
+                         tickers: Optional[List[str]] = None, start: Optional[str] = None, end: Optional[str] = None,
+                         adjust: str = "both", materialize: str = "ohlc", write_workers: int = 4, read_workers: int = 8,
+                         detect_gaps: bool = True, debug_dump: Optional[Path] = None) -> Dict[str, Any]:
+    """Streaming adjustment of a MARKET-layout minute lake (all tickers per day file) into the same layout.
+    `spl`/`div` must already carry holder ids (see _assign_event_ids)."""
+    files = _iter_minute_market_files(prices, start, end)
+    if not files:
+        raise SystemExit(f"No <YYYY>/<MM>/<DD>.parquet minute day files under {prices} for the selection.")
+    days_df, edges = _scan_day_edges_market(files, tickers=tickers, threads=read_workers)
+    if days_df.empty:
+        raise SystemExit("No rows for the requested tickers in the selected day files.")
+    id_days = _attach_id_days(days_df, sm)
+    if debug_dump is not None:
+        debug_dump.mkdir(parents=True, exist_ok=True)
+        id_days.to_csv(debug_dump / "_id_days.csv", index=False); edges.to_csv(debug_dump / "_edges.csv", index=False)
+    F = (_build_split_factors_from_days(id_days, spl, edges=edges, detect_gaps=detect_gaps) if adjust in ("splits", "both")
+         else id_days[["ticker", "event_day"]].assign(split_price_factor=1.0, split_volume_factor=1.0))
+    use_split_base = adjust == "both"
+    if adjust in ("dividends", "both"):
+        base = _build_daily_prior_base(id_days, use_split_base=use_split_base, F=F, edges=edges)
+        G = _build_dividend_factors_from_days(id_days, div, base)
+    else:
+        G = id_days[["ticker", "event_day"]].assign(tr_price_factor=1.0)
+    if debug_dump is not None:
+        F.to_csv(debug_dump / "_split_F.csv", index=False); G.to_csv(debug_dump / "_div_G.csv", index=False)
+    outdir = Path(outdir); outdir.mkdir(parents=True, exist_ok=True)
+    _stream_write_minutes_market(id_days, F, G, outdir, write_workers, materialize, tickers=tickers, debug_dump=debug_dump)
+    return {"files": len(files), "ticker_days": len(id_days), "tickers": int(id_days["ticker"].nunique())}
+
+
 def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int, materialize: str, debug_dump: Optional[Path]=None):
     FG = F.merge(G, on=["ticker","event_day"], how="outer")
     FG["split_price_factor"]  = FG["split_price_factor"].fillna(1.0)
@@ -1150,14 +1327,12 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
         else:
             df["datetime"] = day
 
+        # Exact-day lookup only. The former +-1 day fallback (for lakes partitioned on the UTC date) misfired
+        # whenever a day's factors were legitimately all 1.0 - e.g. the day after an ex-date - and copied the
+        # previous day's total-return factor onto it. Lake files and factors are both keyed on the ET trading
+        # date now, so the fallback is unnecessary.
         day_key = pd.Timestamp(day).date().isoformat()
         sp, sv, tr = factormap.get((tkr, day_key), (1.0, 1.0, 1.0))
-        if (sp, sv, tr) == (1.0, 1.0, 1.0):
-            for delta in (-1, 1):
-                day_key_alt = (pd.Timestamp(day) + pd.Timedelta(days=delta)).date().isoformat()
-                sp, sv, tr = factormap.get((tkr, day_key_alt), (sp, sv, tr))
-                if (sp, sv, tr) != (1.0, 1.0, 1.0):
-                    break
 
         df["id"] = gid
 
@@ -1169,8 +1344,9 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
                 if col in df.columns:
                     df[f"{col}_split"] = df[col] * sp
 
-        # TR
+        # TR (also carry split_price_factor so the ticker layout writes the same columns as the batch/market paths)
         base_col = "close_split"
+        df["split_price_factor"] = sp
         df["tr_price_factor"] = tr
         df["close_tr"] = df[base_col] * tr
         if materialize == "ohlc":
@@ -1254,8 +1430,11 @@ def main():
                     help="Use streaming minute mode (<TICKER>/<YYYY>/<MM>/<DD>.parquet files one-by-one).")
     ap.add_argument("--stream-read-workers", type=int, default=min(8, _default_write_workers()),
                     help="Threads for minute day-edge scan & base building.")
-    ap.add_argument("--no-detect-split-gaps", action="store_true",
-                    help="Disable raw gap detection for split-day alignment in minute streaming.")
+    ap.add_argument("--detect-split-gaps", action="store_true",
+                    help="Minute streaming: infer splits from overnight price gaps for tickers with no splits-table entry. "
+                         "A fallback for lakes without market-wide splits refdata; on the full market it fires on warrants and "
+                         "penny stocks that gap 2x overnight, so it is OFF by default (Step 4 bulk refdata covers every ticker).")
+    ap.add_argument("--no-detect-split-gaps", action="store_true", help="(deprecated no-op: detection is off unless --detect-split-gaps)")
 
     # NEW: debug dump
     ap.add_argument("--debug-dump", type=Path, default=None,
@@ -1283,8 +1462,14 @@ def main():
     # Streaming path for huge MINUTE lakes
     if args.granularity == "minute" and args.minute_stream:
         if layout == "market":
-            raise SystemExit("--minute-stream walks <root>/<TICKER>/<YYYY>/<MM>/<DD>.parquet; a market-layout minute "
-                             "lake (all tickers per day file) is not supported by the streaming path yet.")
+            info = adjust_minute_market(args.prices, sm, spl, div, args.outdir, tickers=tickers, start=args.start, end=args.end,
+                                        adjust=args.adjust, materialize=args.materialize, write_workers=args.write_workers,
+                                        read_workers=args.stream_read_workers, detect_gaps=bool(args.detect_split_gaps),
+                                        debug_dump=args.debug_dump)
+            print(f"\nDone (streaming, market layout): {info['files']} day files, {info['tickers']} tickers, "
+                  f"{info['ticker_days']} ticker-days -> {args.outdir.resolve()}")
+            _copy_manifest(args.prices, args.outdir, args.manifest_src, skip=args.no_copy_manifest)
+            return
         files = _iter_minute_day_files(args.prices, tickers)
         if args.start or args.end:
             s = pd.to_datetime(args.start) if args.start else None
@@ -1300,7 +1485,7 @@ def main():
             id_days.to_csv(args.debug_dump/"_id_days.csv", index=False)
 
         # Pre-scan minute files for first/last closes (split gap & TR base)
-        detect_gaps = not args.no_detect_split_gaps
+        detect_gaps = bool(args.detect_split_gaps)
         edges = _scan_day_edges(days_df, threads=args.stream_read_workers)
         if args.debug_dump is not None:
             edges.to_csv(args.debug_dump/"_edges.csv", index=False)
