@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as _pq
-from tqdm import tqdm
+from tqdm import tqdm as _tqdm_impl
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 
@@ -27,6 +27,27 @@ def _init_worker(splits: Optional[pd.DataFrame], divs: Optional[pd.DataFrame]) -
     global _SPLITS_TABLE, _DIVS_TABLE
     _SPLITS_TABLE = splits
     _DIVS_TABLE = divs
+
+# Progress bars are silenced inside worker processes (N interleaved bars are noise); see _worker_init.
+_PROGRESS = True
+
+def _tqdm(iterable=None, **kw):
+    kw["disable"] = bool(kw.get("disable", False)) or not _PROGRESS
+    return _tqdm_impl(iterable, **kw)
+
+def _worker_init(arrow_threads: int = 1) -> None:
+    """Process-pool initializer: no progress bars, and a small Arrow thread pool per process so that N worker
+    processes x Arrow's default pool (every core) do not oversubscribe the machine."""
+    global _PROGRESS
+    _PROGRESS = False
+    try:
+        pa.set_cpu_count(max(1, int(arrow_threads)))
+        pa.set_io_thread_count(max(2, int(arrow_threads)))
+    except Exception:
+        pass
+
+def _arrow_threads_per_worker(workers: int) -> int:
+    return max(1, (os.cpu_count() or 2) // max(1, int(workers)))
 
 
 # =============================================================
@@ -146,26 +167,25 @@ def _read_prices(path: Path,
                    *[c for c in ("open","high","low") if c in df.columns]]]
 
     # Build file list
-    if path.is_file():
-        files = [path]
-    else:
-        files = sorted(path.rglob("*.parquet"))
-    if not files:
-        raise SystemExit(f"No parquet files found under {path}")
-
     tickset = set(tickers) if tickers else None
     layout = _detect_layout(path) if path.is_dir() else "ticker"
     filters = None
-    if path.is_dir() and tickset:
-        if layout == "ticker":
-            files = [fp for fp in files if _path_contains_any(fp.parts, tickset)]
-            if not files:
-                raise SystemExit("No files matched the provided tickers under the directory (<LAKE>/<TICKER>/...)")
-        else:
+    if path.is_file():
+        files = [path]
+    elif layout == "ticker" and tickset:
+        # walk only the requested <TICKER>/ subtrees: an rglob of a 100k-file lake costs seconds per call
+        files = sorted(f for t in sorted(tickset) if (path / t).is_dir() for f in (path / t).rglob("*.parquet"))
+        if not files:
+            raise SystemExit("No files matched the provided tickers under the directory (<LAKE>/<TICKER>/...)")
+    else:
+        files = sorted(path.rglob("*.parquet"))
+        if not files:
+            raise SystemExit(f"No parquet files found under {path}")
+        if tickset:
             filters = [("ticker", "in", sorted(tickset))]   # market layout: all tickers per file, prune on read
 
     dfs = []
-    for f in tqdm(files, desc=f"Reading prices ({layout} layout) from {path}"):
+    for f in _tqdm(files, desc=f"Reading prices ({layout} layout) from {path}"):
         try:
             raw = pd.read_parquet(f, filters=filters)
             dfs.append(_normalize_one(raw, f, tickset))
@@ -232,22 +252,22 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
     cols = ["ticker", "holder_id", "effective_start", "effective_end", "anchor_date", "start_confirmed", "end_confirmed"]
     if s.empty:
         return s[cols]
-    rows = []
-    for (t, h), g in s.groupby(["ticker", "holder_id"]):
-        # same rules as polygon_pullers._dedupe_holders: a confirmed start (real ticker change) beats an
-        # unconfirmed list_date; an open end beats a stale delisted record of the same company
-        cs = g.loc[g["start_confirmed"], "effective_start"].dropna()
-        start = cs.min() if len(cs) else g["effective_start"].min()
-        if g["effective_end"].isna().any():
-            end = pd.NaT
-        else:
-            ce = g.loc[g["end_confirmed"], "effective_end"].dropna()
-            end = ce.max() if len(ce) else g["effective_end"].max()
-        rows.append({"ticker": t, "holder_id": h, "effective_start": start, "effective_end": end,
-                     "anchor_date": g["anchor_date"].min(),
-                     "start_confirmed": bool(g["start_confirmed"].any() and pd.notna(start)),
-                     "end_confirmed": bool(g["end_confirmed"].any() and pd.notna(end))})
-    out = pd.DataFrame(rows, columns=cols)
+    # Same rules as polygon_pullers._dedupe_holders, vectorised (a loop over the 29k groups of the market security
+    # master cost ~9 s per call): a confirmed start (real ticker change) beats an unconfirmed list_date; an open end
+    # beats a stale delisted record of the same company.
+    keys = ["ticker", "holder_id"]
+    g = s.groupby(keys, sort=True)
+    out = g.agg(all_start=("effective_start", "min"), all_end=("effective_end", "max"), anchor_date=("anchor_date", "min"),
+                any_sc=("start_confirmed", "any"), any_ec=("end_confirmed", "any"))
+    end_open = s["effective_end"].isna().groupby([s[k] for k in keys]).any().reindex(out.index)
+    cs = s.loc[s["start_confirmed"]].groupby(keys)["effective_start"].min().reindex(out.index)
+    ce = s.loc[s["end_confirmed"]].groupby(keys)["effective_end"].max().reindex(out.index)
+    start = cs.where(cs.notna(), out["all_start"])
+    end = ce.where(ce.notna(), out["all_end"]).where(~end_open.astype(bool), pd.NaT)
+    out["effective_start"], out["effective_end"] = start, end
+    out["start_confirmed"] = out["any_sc"] & start.notna()
+    out["end_confirmed"] = out["any_ec"] & end.notna()
+    out = out.reset_index()[cols]
     for c in ("effective_start", "effective_end", "anchor_date"):
         out[c] = pd.to_datetime(out[c]).astype("datetime64[ns]")
     return out
@@ -332,6 +352,23 @@ def _event_ids(df: pd.DataFrame) -> np.ndarray:
     nofigi = ("NOFIGI__" + df["ticker"].astype(str)).to_numpy()
     return np.where(hid.notna().to_numpy(), hid.astype(str).to_numpy(),
                     np.where(figi.notna().to_numpy(), figi.astype(str).to_numpy(), nofigi))
+
+
+class _EventIndex:
+    """A splits/dividends table pre-grouped by holder id and by ticker. The streaming builders look events up once
+    per (ticker, holder); scanning the full-market table (470k dividends) for each of 30k+ holders cost minutes."""
+    def __init__(self, table: pd.DataFrame, date_col: str, cols: List[str]):
+        self.date_col, self.cols = date_col, cols
+        self.empty = table.iloc[0:0][cols]
+        self.by_id = {k: g[cols].dropna().sort_values(date_col) for k, g in table.groupby("event_id", sort=False)}
+        self.by_ticker = {k: g[cols].dropna().sort_values(date_col) for k, g in table.groupby("ticker", sort=False)}
+
+    def get(self, gid: str, ticker: str) -> pd.DataFrame:
+        """Same rule as _events_for_holder: only a NOFIGI__ id may fall back to ticker-keyed events."""
+        ev = self.by_id.get(gid)
+        if (ev is None or ev.empty) and str(gid).startswith("NOFIGI__"):
+            ev = self.by_ticker.get(ticker)
+        return self.empty if ev is None else ev
 
 
 def _events_for_holder(table: pd.DataFrame, gid: str, ticker: str, date_col: str, cols: List[str]) -> pd.DataFrame:
@@ -551,7 +588,7 @@ def _build_split_factors(px_df: pd.DataFrame,
 
     groups = [(gid, g[["ticker","event_day"]].copy()) for gid, g in px_df.groupby("id")]
     if workers <= 1:
-        for gid, g in tqdm(groups, desc="Split factors per id"):
+        for gid, g in _tqdm(groups, desc="Split factors per id"):
             _SPLITS_TABLE = S
             res, st = _split_factors_for_id_worker((gid, g))
             out_parts.append(res)
@@ -561,7 +598,7 @@ def _build_split_factors(px_df: pd.DataFrame,
                                  initializer=_init_worker,
                                  initargs=(S, None)) as ex:
             futs = {ex.submit(_split_factors_for_id_worker, (gid, g)): gid for gid, g in groups}
-            for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Split factors per id"):
+            for fut in _tqdm(as_completed(futs), total=len(futs), desc=f"Split factors per id"):
                 gid = futs[fut]
                 res, st = fut.result()
                 out_parts.append(res)
@@ -582,7 +619,7 @@ def _build_dividend_factors(px_df: pd.DataFrame,
 
     groups = [(gid, g.sort_values("datetime").copy()) for gid, g in px_df.groupby("id")]
     if workers <= 1:
-        for gid, g in tqdm(groups, desc="Dividend factors per id"):
+        for gid, g in _tqdm(groups, desc="Dividend factors per id"):
             _DIVS_TABLE = D
             res, st = _dividend_factors_for_id_worker((gid, g, use_split_base))
             out_parts.append(res)
@@ -592,7 +629,7 @@ def _build_dividend_factors(px_df: pd.DataFrame,
                                  initializer=_init_worker,
                                  initargs=(None, D)) as ex:
             futs = {ex.submit(_dividend_factors_for_id_worker, (gid, g, use_split_base)): gid for gid, g in groups}
-            for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Dividend factors per id"):
+            for fut in _tqdm(as_completed(futs), total=len(futs), desc=f"Dividend factors per id"):
                 gid = futs[fut]
                 res, st = fut.result()
                 out_parts.append(res)
@@ -687,12 +724,12 @@ def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, wr
         groups = list(df.groupby(key_cols))
         desc = f"Writing {granularity} lake (market layout" + (f", parallel x{write_workers})" if write_workers > 1 else ")")
         if write_workers <= 1:
-            for k, g in tqdm(groups, desc=desc):
+            for k, g in _tqdm(groups, desc=desc):
                 _write_one_parquet(_mpath(k), g[cols_to_write])
         else:
             with ThreadPoolExecutor(max_workers=write_workers) as ex:
                 futs = [ex.submit(_write_one_parquet, _mpath(k), g[cols_to_write]) for k, g in groups]
-                for _ in tqdm(as_completed(futs), total=len(futs), desc=desc):
+                for _ in _tqdm(as_completed(futs), total=len(futs), desc=desc):
                     _.result()
         return
 
@@ -704,7 +741,7 @@ def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, wr
         n_tasks = int(df[key_cols].drop_duplicates().shape[0])
         desc = "Writing day lake" if write_workers <= 1 else f"Writing day lake (parallel x{write_workers})"
         if write_workers <= 1:
-            for (t, y, m), g in tqdm(df.groupby(key_cols), desc=desc):
+            for (t, y, m), g in _tqdm(df.groupby(key_cols), desc=desc):
                 outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}.parquet"
                 _write_one_parquet(outpath, g[cols_to_write].drop(columns=["YYYY","MM"], errors="ignore"))
         else:
@@ -713,7 +750,7 @@ def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, wr
                 for (t, y, m), g in df.groupby(key_cols):
                     outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}.parquet"
                     futures.append(ex.submit(_write_one_parquet, outpath, g[cols_to_write].drop(columns=["YYYY","MM"], errors="ignore")))
-                for _ in tqdm(as_completed(futures), total=n_tasks, desc=desc):
+                for _ in _tqdm(as_completed(futures), total=n_tasks, desc=desc):
                     _.result()
 
     elif granularity == "minute":
@@ -721,7 +758,7 @@ def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, wr
         n_tasks = int(df[key_cols].drop_duplicates().shape[0])
         desc = "Writing minute lake" if write_workers <= 1 else f"Writing minute lake (parallel x{write_workers})"
         if write_workers <= 1:
-            for (t, y, m, d), g in tqdm(df.groupby(key_cols), desc=desc):
+            for (t, y, m, d), g in _tqdm(df.groupby(key_cols), desc=desc):
                 outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}" / f"{int(d):02d}.parquet"
                 _write_one_parquet(outpath, g[cols_to_write].drop(columns=["YYYY","MM","DD"], errors="ignore"))
         else:
@@ -730,7 +767,7 @@ def _write_partitioned_lake(df: pd.DataFrame, outdir: Path, granularity: str, wr
                 for (t, y, m, d), g in df.groupby(key_cols):
                     outpath = outdir / t / f"{int(y):04d}" / f"{int(m):02d}" / f"{int(d):02d}.parquet"
                     futures.append(ex.submit(_write_one_parquet, outpath, g[cols_to_write].drop(columns=["YYYY","MM","DD"], errors="ignore")))
-                for _ in tqdm(as_completed(futures), total=n_tasks, desc=desc):
+                for _ in _tqdm(as_completed(futures), total=n_tasks, desc=desc):
                     _.result()
     else:
         raise ValueError("granularity must be 'day' or 'minute'")
@@ -778,7 +815,20 @@ def _copy_manifest(prices: Path, outdir: Path, manifest_src: Optional[Path], ski
 # Summary output
 # =============================================================
 
+_SUMMARY_COLUMNS = ["id", "ticker", "adjust_mode", "tr_base", "split_events_aligned", "split_cum_ratio",
+                    "last_split_raw_date", "last_split_aligned_day", "dividend_event_days", "dividend_total_cash",
+                    "last_dividend_raw_date", "last_dividend_aligned_day", "last_datetime", "used_fallback"]
+
+def _write_summary_rows(rows: List[dict], outdir: Path) -> Path:
+    summary = pd.DataFrame(rows, columns=_SUMMARY_COLUMNS).sort_values(["ticker", "id"]).reset_index(drop=True)
+    outpath = outdir / "_event_summary.csv"
+    summary.to_csv(outpath, index=False)
+    return outpath
+
 def _write_summary_csv(stats: dict, outdir: Path, px_df: pd.DataFrame, adjust_mode: str, use_split_base: bool) -> Path:
+    return _write_summary_rows(_summary_rows(stats, px_df, adjust_mode, use_split_base), outdir)
+
+def _summary_rows(stats: dict, px_df: pd.DataFrame, adjust_mode: str, use_split_base: bool) -> List[dict]:
     rows = []
     ids = sorted(px_df["id"].unique())
     last_dt_per_id = px_df.groupby("id", as_index=False)["datetime"].max().rename(columns={"datetime": "last_datetime"})
@@ -808,11 +858,7 @@ def _write_summary_csv(stats: dict, outdir: Path, px_df: pd.DataFrame, adjust_mo
             "last_datetime": last_dt_map.get(gid),
             "used_fallback": bool(split_rec.get("fallback")) or bool(div_rec.get("fallback")),
         })
-
-    summary = pd.DataFrame(rows).sort_values(["ticker", "id"]).reset_index(drop=True)
-    outpath = outdir / "_event_summary.csv"
-    summary.to_csv(outpath, index=False)
-    return outpath
+    return rows
 
 def _print_aligned_summary(summary: pd.DataFrame) -> None:
     dt_cols = ["last_split_raw_date", "last_split_aligned_day",
@@ -913,19 +959,25 @@ def _read_first_last_close(path: Path, ticker: Optional[str]) -> Tuple[float, fl
     df = df.sort_values("datetime")
     return float(df["close"].iloc[0]), float(df["close"].iloc[-1])
 
+def _read_first_last_close_task(task: Tuple[str, Any, Any]) -> Tuple[str, Any, float, float]:
+    t, d, p = task
+    try:
+        f, l = _read_first_last_close(Path(p), t)
+    except Exception:
+        f, l = (np.nan, np.nan)
+    return (t, d, f, l)
+
 def _scan_day_edges(days_df: pd.DataFrame, threads: int = 4) -> pd.DataFrame:
-    """For each (ticker, event_day, path), read first/last close; compute raw gap vs prior day last."""
-    rows = []
+    """For each (ticker, event_day, path), read first/last close; compute raw gap vs prior day last.
+    threads > 1 spreads the reads over that many processes (one small file per task; the pandas work is GIL-bound)."""
     tasks = [(r.ticker, r.event_day, r.path) for r in days_df.itertuples()]
-    with ThreadPoolExecutor(max_workers=threads) as ex:
-        futs = {ex.submit(_read_first_last_close, Path(p), t): (t, d, p) for (t, d, p) in tasks}
-        for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Scanning minute day edges (threads x{threads})"):
-            t, d, p = futs[fut]
-            try:
-                f, l = fut.result()
-            except Exception:
-                f, l = (np.nan, np.nan)
-            rows.append((t, d, f, l))
+    desc = f"Scanning minute day edges (x{threads})"
+    if threads <= 1:
+        rows = [_read_first_last_close_task(t) for t in _tqdm(tasks, desc=desc)]
+    else:
+        with ProcessPoolExecutor(max_workers=threads, initializer=_worker_init,
+                                 initargs=(_arrow_threads_per_worker(threads),)) as ex:
+            rows = list(_tqdm(ex.map(_read_first_last_close_task, tasks, chunksize=256), total=len(tasks), desc=desc))
     edges = pd.DataFrame(rows, columns=["ticker","event_day","first_close","last_close"])
     edges = edges.sort_values(["ticker","event_day"])
     edges["prev_last"] = edges.groupby("ticker")["last_close"].shift(1)
@@ -946,6 +998,7 @@ def _build_split_factors_from_days(id_days: pd.DataFrame,
                                    edges: Optional[pd.DataFrame],
                                    detect_gaps: bool) -> pd.DataFrame:
     s = _prep_splits(spl)
+    s_idx = _EventIndex(s, "execution_date", ["execution_date", "ratio"])
     out = []
 
     E = None
@@ -955,14 +1008,14 @@ def _build_split_factors_from_days(id_days: pd.DataFrame,
 
     # One holder (company) at a time: a recycled ticker's previous company must not receive the
     # current company's splits, and each holder anchors its own factors.
-    for (tkr, gid), g in tqdm(id_days.groupby(["ticker", "id"]), desc="Split factors per holder (days)"):
+    for (tkr, gid), g in _tqdm(id_days.groupby(["ticker", "id"]), desc="Split factors per holder (days)"):
         # IMPORTANT: reset_index to avoid index misalignment later
         days = (g[["event_day"]]
                 .drop_duplicates()
                 .sort_values("event_day")
                 .reset_index(drop=True))
 
-        ev = _events_for_holder(s, gid, tkr, "execution_date", ["execution_date", "ratio"])
+        ev = s_idx.get(gid, tkr)
 
         if ev.empty:
             per_day = pd.DataFrame({"event_day": [], "ratio": []})
@@ -1040,7 +1093,7 @@ def _build_daily_prior_base(id_days: pd.DataFrame,
 
     # 'spf' (split factor in force that day) travels with the base so raw dividend amounts can
     # be expressed in the same split-adjusted units as the base they are divided by.
-    base = base[["id","event_day","base","spf"]].sort_values(["id","event_day"])
+    base = base[["id","ticker","event_day","base","spf"]].sort_values(["id","ticker","event_day"])
     return base
 
 def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
@@ -1059,21 +1112,40 @@ def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
 
 def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
     d = _prep_divs_for_stream(div)
+    d_idx = _EventIndex(d, "ex_date", ["ex_date", "amount"])
     out = []
     cal = id_days[["ticker","id","event_day"]].drop_duplicates().sort_values(["ticker","id","event_day"])
 
-    b = base.merge(id_days[["ticker","id","event_day"]].drop_duplicates(),
-                   on=["id","event_day"], how="left")
-    b = b.sort_values(["id","event_day"])
-    b["prior_base"] = b.groupby("id")["base"].shift(1)   # per holder: never carry a base across companies
+    keys = ["ticker", "id", "event_day"] if "ticker" in base.columns else ["id", "event_day"]
+    b = base.merge(id_days[["ticker","id","event_day"]].drop_duplicates(), on=keys, how="left")
+    b = b.sort_values(["id","ticker","event_day"]).reset_index(drop=True)
     if "spf" not in b.columns:
         b["spf"] = 1.0
+    # Prior-day base per holder AND ticker. A holder whose several tickers trade on the same days (units, warrants
+    # and common under one CIK id in the market refdata) must not take another ticker's close as its prior base;
+    # keyed on the holder alone, those rows multiplied in the join below and crashed the full-market minute build.
+    # A ticker's first day still inherits the holder's previous day under its former ticker (FB -> META), so a
+    # rename never breaks the chain, and a base is never carried across companies.
+    b["prior_base"] = b.groupby(["id","ticker"])["base"].shift(1)
+    first = b["prior_base"].isna().to_numpy()
+    if first.any():
+        per_day = b.groupby(["id","event_day"], as_index=False)["base"].last()
+        per_day["_prev"] = per_day.groupby("id")["base"].shift(1)
+        b = b.merge(per_day[["id","event_day","_prev"]], on=["id","event_day"], how="left")
+        b.loc[first, "prior_base"] = b.loc[first, "_prev"]
+        b = b.drop(columns=["_prev"])
 
-    for (tkr, gid), g in tqdm(cal.groupby(["ticker", "id"]), desc="Dividend factors per holder (days)"):
+    # prior bases pre-grouped per (ticker, holder): a boolean filter of the whole frame per holder is O(holders x rows),
+    # hours on a 22-year full-market minute lake
+    prb_cols = ["event_day", "prior_base", "spf"]
+    prb_by = {k: g[prb_cols] for k, g in b.groupby(["ticker", "id"], sort=False)}
+    prb_empty = b.iloc[0:0][prb_cols]
+
+    for (tkr, gid), g in _tqdm(cal.groupby(["ticker", "id"]), desc="Dividend factors per holder (days)"):
         # IMPORTANT: reset_index here too
         days = g[["event_day"]].copy().reset_index(drop=True)
-        prb  = b[(b["ticker"] == tkr) & (b["id"] == gid)][["event_day","prior_base","spf"]]
-        ev = _events_for_holder(d, gid, tkr, "ex_date", ["ex_date", "amount"])
+        prb  = prb_by.get((tkr, gid), prb_empty)
+        ev = d_idx.get(gid, tkr)
 
         if ev.empty:
             tmp = days.copy()
@@ -1174,7 +1246,7 @@ def _scan_day_edges_market(files: List[Tuple[Path, pd.Timestamp]], tickers: Opti
         return idx.assign(event_day=day, path=str(f))
     with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
         futs = [ex.submit(one, it) for it in files]
-        for fut in tqdm(as_completed(futs), total=len(futs), desc=f"Scanning market day files (threads x{threads})"):
+        for fut in _tqdm(as_completed(futs), total=len(futs), desc=f"Scanning market day files (threads x{threads})"):
             parts.append(fut.result())
     all_ = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["ticker", "first_close", "last_close", "event_day", "path"])
     days_df = all_[["ticker", "path", "event_day"]].sort_values(["ticker", "event_day"]).reset_index(drop=True)
@@ -1183,11 +1255,55 @@ def _scan_day_edges_market(files: List[Tuple[Path, pd.Timestamp]], tickers: Opti
     edges["raw_gap"] = edges["first_close"] / edges["prev_last"]
     return days_df, edges
 
+def _stream_write_market_one(task: Tuple) -> int:
+    """Adjust and write one market-layout minute day file: read once, join that day's factors and holder ids by
+    ticker, write the same layout (ticker-major, row groups, .idx.parquet sidecar)."""
+    path, day, fg, ids, outdir, materialize, tlist = task
+    df = pd.read_parquet(path, filters=[("ticker", "in", tlist)] if tlist else None)
+    if "T" in df.columns and "ticker" not in df.columns:
+        df = df.rename(columns={"T": "ticker"})
+    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    if tlist:
+        df = df[df["ticker"].isin(tlist)]
+    if df.empty:
+        return 0
+    for a, b in (("c", "close"), ("v", "volume"), ("o", "open"), ("h", "high"), ("l", "low")):
+        if b not in df.columns and a in df.columns:
+            df = df.rename(columns={a: b})
+    df["datetime"] = _to_naive_utc(df["datetime"]) if "datetime" in df.columns else pd.Timestamp(day)
+    df = df.merge(fg, on="ticker", how="left") if fg is not None else df.assign(split_price_factor=1.0, split_volume_factor=1.0, tr_price_factor=1.0)
+    for c in ("split_price_factor", "split_volume_factor", "tr_price_factor"):
+        df[c] = df[c].fillna(1.0)
+    df = df.merge(ids, on="ticker", how="left") if ids is not None else df.assign(id=pd.NA)
+    df["id"] = df["id"].where(df["id"].notna(), "NOFIGI__" + df["ticker"])
+    sp, sv, tr = df["split_price_factor"], df["split_volume_factor"], df["tr_price_factor"]
+    df["close_split"] = df["close"] * sp
+    df["volume_split"] = df["volume"] * sv
+    if materialize == "ohlc":
+        for col in ("open", "high", "low"):
+            if col in df.columns:
+                df[f"{col}_split"] = df[col] * sp
+    df["close_tr"] = df["close_split"] * tr
+    if materialize == "ohlc":
+        for col in ("open_split", "high_split", "low_split"):
+            if col in df.columns:
+                df[col.replace("_split", "_tr")] = df[col] * tr
+    df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
+    cols = _select_columns_to_write(df, materialize)
+    d = pd.Timestamp(day)
+    outpath = Path(outdir) / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}.parquet"
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    tmp = outpath.with_suffix(".parquet.inprogress")
+    _pq.write_table(pa.Table.from_pandas(df[cols], preserve_index=False), tmp, compression="zstd", row_group_size=ROW_GROUP_SIZE_MARKET)
+    tmp.replace(outpath)
+    _day_index(df).to_parquet(_index_path(outpath), index=False)
+    return len(df)
+
 def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int,
                                  materialize: str, tickers: Optional[List[str]] = None, debug_dump: Optional[Path] = None) -> None:
-    """Per day file: read once, join that day's factors and holder ids by ticker, write the adjusted day file in
-    the same market layout (ticker-major, row groups, .idx.parquet sidecar). Replaces the per-(ticker, file)
-    loop of _stream_write_minutes, which would open each day file once per ticker."""
+    """Per day file (one read each, not one per ticker): write the adjusted day file in the same market layout.
+    write_workers > 1 runs the day files in that many processes; each task carries just its day's factor and
+    holder-id slices, so a full-market factor table is never copied into every worker."""
     FG = F.merge(G, on=["ticker", "event_day"], how="outer")
     for c in ("split_price_factor", "split_volume_factor", "tr_price_factor"):
         FG[c] = FG[c].fillna(1.0)
@@ -1199,57 +1315,17 @@ def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.D
     files = id_days[["path", "event_day"]].drop_duplicates("path").itertuples(index=False)
     tlist = sorted(set(t.strip().upper() for t in tickers)) if tickers else None
 
-    def one(path: str, day) -> int:
-        df = pd.read_parquet(path, filters=[("ticker", "in", tlist)] if tlist else None)
-        if "T" in df.columns and "ticker" not in df.columns:
-            df = df.rename(columns={"T": "ticker"})
-        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
-        if tlist:
-            df = df[df["ticker"].isin(tlist)]
-        if df.empty:
-            return 0
-        for a, b in (("c", "close"), ("v", "volume"), ("o", "open"), ("h", "high"), ("l", "low")):
-            if b not in df.columns and a in df.columns:
-                df = df.rename(columns={a: b})
-        df["datetime"] = _to_naive_utc(df["datetime"]) if "datetime" in df.columns else pd.Timestamp(day)
-        fg = fg_by_day.get(day); ids = id_by_day.get(day)
-        df = df.merge(fg, on="ticker", how="left") if fg is not None else df.assign(split_price_factor=1.0, split_volume_factor=1.0, tr_price_factor=1.0)
-        for c in ("split_price_factor", "split_volume_factor", "tr_price_factor"):
-            df[c] = df[c].fillna(1.0)
-        df = df.merge(ids, on="ticker", how="left") if ids is not None else df.assign(id=pd.NA)
-        df["id"] = df["id"].where(df["id"].notna(), "NOFIGI__" + df["ticker"])
-        sp, sv, tr = df["split_price_factor"], df["split_volume_factor"], df["tr_price_factor"]
-        df["close_split"] = df["close"] * sp
-        df["volume_split"] = df["volume"] * sv
-        if materialize == "ohlc":
-            for col in ("open", "high", "low"):
-                if col in df.columns:
-                    df[f"{col}_split"] = df[col] * sp
-        df["close_tr"] = df["close_split"] * tr
-        if materialize == "ohlc":
-            for col in ("open_split", "high_split", "low_split"):
-                if col in df.columns:
-                    df[col.replace("_split", "_tr")] = df[col] * tr
-        df = df.sort_values(["ticker", "datetime"]).reset_index(drop=True)
-        cols = _select_columns_to_write(df, materialize)
-        d = pd.Timestamp(day)
-        outpath = outdir / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}.parquet"
-        outpath.parent.mkdir(parents=True, exist_ok=True)
-        tmp = outpath.with_suffix(".parquet.inprogress")
-        _pq.write_table(pa.Table.from_pandas(df[cols], preserve_index=False), tmp, compression="zstd", row_group_size=ROW_GROUP_SIZE_MARKET)
-        tmp.replace(outpath)
-        _day_index(df).to_parquet(_index_path(outpath), index=False)
-        return len(df)
-
-    items = list(files)
+    tasks = [(it.path, it.event_day, fg_by_day.get(it.event_day), id_by_day.get(it.event_day), str(outdir), materialize, tlist)
+             for it in files]
     if write_workers <= 1:
-        for it in tqdm(items, desc="Writing minute lake (market layout)"):
-            one(it.path, it.event_day)
+        for t in _tqdm(tasks, desc="Writing minute lake (market layout)"):
+            _stream_write_market_one(t)
     else:
-        with ThreadPoolExecutor(max_workers=write_workers) as ex:
-            futs = [ex.submit(one, it.path, it.event_day) for it in items]
-            for _ in tqdm(as_completed(futs), total=len(futs), desc=f"Writing minute lake (market layout x{write_workers})"):
-                _.result()
+        with ProcessPoolExecutor(max_workers=write_workers, initializer=_worker_init,
+                                 initargs=(_arrow_threads_per_worker(write_workers),)) as ex:
+            for _ in _tqdm(ex.map(_stream_write_market_one, tasks), total=len(tasks),
+                           desc=f"Writing minute lake (market layout x{write_workers} processes)"):
+                pass
 
 def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, outdir: Path, *,
                          tickers: Optional[List[str]] = None, start: Optional[str] = None, end: Optional[str] = None,
@@ -1282,6 +1358,51 @@ def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div:
     return {"files": len(files), "ticker_days": len(id_days), "tickers": int(id_days["ticker"].nunique())}
 
 
+def _stream_write_one(task: Tuple) -> int:
+    """Adjust and write one <TICKER>/<YYYY>/<MM>/<DD>.parquet minute day file (ticker layout) with the day's factors."""
+    tkr, path, day, gid, sp, sv, tr, outdir, materialize = task
+    day = pd.Timestamp(day)
+    df = pd.read_parquet(path)
+    # Normalize & filter to the target ticker
+    if "ticker" in df.columns or "T" in df.columns:
+        if "T" in df.columns and "ticker" not in df.columns:
+            df = df.rename(columns={"T":"ticker"})
+        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df = df[df["ticker"] == tkr]
+    else:
+        df["ticker"] = tkr
+    if df.empty:
+        return 0
+    if "close" not in df.columns and "c" in df.columns:
+        df = df.rename(columns={"c":"close"})
+    if "volume" not in df.columns and "v" in df.columns:
+        df = df.rename(columns={"v":"volume"})
+    if "datetime" in df.columns:
+        df["datetime"] = _to_naive_utc(df["datetime"])   # tz-naive UTC, same as the batch path
+    else:
+        df["datetime"] = day
+    df["id"] = gid
+    # split-adjust
+    df["close_split"]  = df["close"]  * sp
+    df["volume_split"] = df["volume"] * sv
+    if materialize == "ohlc":
+        for col in ("open","high","low"):
+            if col in df.columns:
+                df[f"{col}_split"] = df[col] * sp
+    # TR (also carry split_price_factor so the ticker layout writes the same columns as the batch/market paths)
+    df["split_price_factor"] = sp
+    df["tr_price_factor"] = tr
+    df["close_tr"] = df["close_split"] * tr
+    if materialize == "ohlc":
+        for col in ("open_split","high_split","low_split"):
+            if col in df.columns:
+                df[col.replace("_split","_tr")] = df[col] * tr
+    outpath = Path(outdir) / tkr / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}.parquet"
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    cols = _select_columns_to_write(df, materialize)
+    df[cols].to_parquet(outpath, index=False)
+    return len(df)
+
 def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int, materialize: str, debug_dump: Optional[Path]=None):
     FG = F.merge(G, on=["ticker","event_day"], how="outer")
     FG["split_price_factor"]  = FG["split_price_factor"].fillna(1.0)
@@ -1303,71 +1424,198 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
         debug_dump.mkdir(parents=True, exist_ok=True)
         FG[["ticker","event_day","day_key","split_price_factor","split_volume_factor","tr_price_factor"]].to_csv(debug_dump/"_factormap.csv", index=False)
 
-    def _do_one(row) -> None:
-        tkr, path, day, gid = row.ticker, Path(row.path), row.event_day, row.id
-        df = pd.read_parquet(path)
-        # Normalize & filter to the target ticker
-        if "ticker" in df.columns or "T" in df.columns:
-            if "T" in df.columns and "ticker" not in df.columns:
-                df = df.rename(columns={"T":"ticker"})
-            df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
-            df = df[df["ticker"] == tkr]
-        else:
-            df["ticker"] = tkr
+    # Exact-day lookup only. The former +-1 day fallback (for lakes partitioned on the UTC date) misfired
+    # whenever a day's factors were legitimately all 1.0 - e.g. the day after an ex-date - and copied the
+    # previous day's total-return factor onto it. Lake files and factors are both keyed on the ET trading
+    # date now, so the fallback is unnecessary.
+    tasks = []
+    for r in id_days.itertuples():
+        day = pd.Timestamp(r.event_day)
+        sp, sv, tr = factormap.get((r.ticker, day.date().isoformat()), (1.0, 1.0, 1.0))
+        tasks.append((r.ticker, str(r.path), day, r.id, sp, sv, tr, str(outdir), materialize))
 
-        if df.empty:
-            return
-
-        if "close" not in df.columns and "c" in df.columns:
-            df = df.rename(columns={"c":"close"})
-        if "volume" not in df.columns and "v" in df.columns:
-            df = df.rename(columns={"v":"volume"})
-        if "datetime" in df.columns:
-            df["datetime"] = _to_naive_utc(df["datetime"])   # tz-naive UTC, same as the batch path
-        else:
-            df["datetime"] = day
-
-        # Exact-day lookup only. The former +-1 day fallback (for lakes partitioned on the UTC date) misfired
-        # whenever a day's factors were legitimately all 1.0 - e.g. the day after an ex-date - and copied the
-        # previous day's total-return factor onto it. Lake files and factors are both keyed on the ET trading
-        # date now, so the fallback is unnecessary.
-        day_key = pd.Timestamp(day).date().isoformat()
-        sp, sv, tr = factormap.get((tkr, day_key), (1.0, 1.0, 1.0))
-
-        df["id"] = gid
-
-        # split-adjust
-        df["close_split"]  = df["close"]  * sp
-        df["volume_split"] = df["volume"] * sv
-        if materialize == "ohlc":
-            for col in ("open","high","low"):
-                if col in df.columns:
-                    df[f"{col}_split"] = df[col] * sp
-
-        # TR (also carry split_price_factor so the ticker layout writes the same columns as the batch/market paths)
-        base_col = "close_split"
-        df["split_price_factor"] = sp
-        df["tr_price_factor"] = tr
-        df["close_tr"] = df[base_col] * tr
-        if materialize == "ohlc":
-            for col in ("open_split","high_split","low_split"):
-                if col in df.columns:
-                    df[col.replace("_split","_tr")] = df[col] * tr
-
-        outpath = outdir / tkr / f"{day.year:04d}" / f"{day.month:02d}" / f"{day.day:02d}.parquet"
-        outpath.parent.mkdir(parents=True, exist_ok=True)
-        cols = _select_columns_to_write(df, materialize)
-        df[cols].to_parquet(outpath, index=False)
-
-    rows = list(id_days.itertuples())
     if write_workers <= 1:
-        for r in tqdm(rows, desc="Writing minute lake (stream)"):
-            _do_one(r)
+        for t in _tqdm(tasks, desc="Writing minute lake (stream)"):
+            _stream_write_one(t)
     else:
-        with ThreadPoolExecutor(max_workers=write_workers) as ex:
-            futs = [ex.submit(_do_one, r) for r in rows]
-            for _ in tqdm(as_completed(futs), total=len(futs), desc=f"Writing minute lake (stream x{write_workers})"):
-                _.result()
+        # processes, not threads: each task is a small read-multiply-write in pandas, which holds the GIL
+        with ProcessPoolExecutor(max_workers=write_workers, initializer=_worker_init,
+                                 initargs=(_arrow_threads_per_worker(write_workers),)) as ex:
+            for _ in _tqdm(ex.map(_stream_write_one, tasks, chunksize=128), total=len(tasks),
+                           desc=f"Writing minute lake (stream x{write_workers} processes)"):
+                pass
+
+
+# =============================================================
+# Sharded batch build: each process runs read -> holder ids -> factors -> write on its own slice of holders
+# =============================================================
+
+def _adjust_frame(px: pd.DataFrame, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, adjust: str,
+                  workers: int = 1) -> Tuple[pd.DataFrame, dict, bool]:
+    """Batch adjustment of a price frame: holder ids, split factors, dividend factors, renormalisation.
+    Returns (adjusted frame, per-id stats, use_split_base)."""
+    px_id = _attach_id(px, sm)
+    px_id["close_split"]  = px_id["close"]
+    px_id["volume_split"] = px_id["volume"]
+    stats: dict = {}
+    if adjust in ("splits", "both"):
+        F      = _build_split_factors(px_id, spl, stats=stats, workers=workers)
+        px_spl = _apply_splits(px_id, F)
+    else:
+        px_spl = px_id.copy()
+    if adjust in ("dividends", "both"):
+        use_split_base = (adjust == "both")
+        G     = _build_dividend_factors(px_spl, div, use_split_base=use_split_base, stats=stats, workers=workers)
+        px_tr = _apply_dividends(px_spl, G, use_split_base=use_split_base)
+        px_tr = _renormalize_tr_to_one(px_tr, use_split_base=use_split_base)
+    else:
+        px_tr = px_spl.copy()
+        px_tr["tr_price_factor"] = 1.0
+        px_tr["close_tr"] = px_tr["close_split"]
+        use_split_base = False
+    return px_tr, stats, use_split_base
+
+
+def _holder_groups(tickers: List[str], sm: pd.DataFrame) -> List[List[str]]:
+    """Tickers that share a holder id (a renamed company: FB -> META) form one group, so a single shard sees every
+    row of that id: its factors chain across the rename and anchor on the id's last bar. Sorted groups of sorted tickers."""
+    parent = {t: t for t in tickers}
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    smn = _normalize_sm(sm) if len(sm) else pd.DataFrame(columns=["ticker", "holder_id"])
+    smn = smn[smn["ticker"].isin(parent)]
+    for _, g in smn.groupby("holder_id"):
+        ts = sorted(set(g["ticker"]))
+        for t in ts[1:]:
+            ra, rb = find(ts[0]), find(t)
+            if ra != rb:
+                parent[rb] = ra
+    groups: Dict[str, List[str]] = {}
+    for t in tickers:
+        groups.setdefault(find(t), []).append(t)
+    return sorted((sorted(g) for g in groups.values()), key=lambda g: g[0])
+
+
+def _plan_shards(tickers: List[str], sm: pd.DataFrame, weights: Dict[str, int], n_shards: int) -> List[List[str]]:
+    """Cut the tickers into at most n_shards alphabetical slices of about equal weight without separating the
+    tickers of one holder. Alphabetical slices matter for the market layout: files are ticker-major with row-group
+    statistics, so a slice's `ticker in [...]` read filter skips whole row groups instead of decoding every file."""
+    groups = _holder_groups(sorted(set(tickers)), sm)
+    if not groups:
+        return []
+    n_shards = max(1, min(int(n_shards), len(groups)))
+    wt = lambda g: sum(max(1, int(weights.get(t, 1))) for t in g)
+    total = sum(wt(g) for g in groups)
+    shards: List[List[str]] = [[]]
+    acc = 0
+    for g in groups:
+        w = wt(g)
+        if shards[-1] and len(shards) < n_shards and acc + w > total * len(shards) / n_shards:
+            shards.append([])
+        shards[-1].extend(g)
+        acc += w
+    return [sh for sh in shards if sh]
+
+
+def _ticker_weights(prices: Path, layout: str, tickers: Optional[List[str]]) -> Dict[str, int]:
+    """Tickers present in the lake (restricted to `tickers` when given) with a cost weight each: files per
+    <TICKER>/ directory (ticker layout) or rows per ticker from the parquet ticker column (market layout)."""
+    prices = Path(prices)
+    want = set(t.strip().upper() for t in tickers) if tickers else None
+    w: Dict[str, int] = {}
+    if layout == "ticker":
+        for d in prices.iterdir():
+            t = d.name.strip().upper()
+            if d.is_dir() and (want is None or t in want):
+                w[t] = sum(1 for _ in d.rglob("*.parquet"))
+        return {t: n for t, n in w.items() if n}
+    import pyarrow.compute as pc
+    files = [f for f in sorted(prices.rglob("*.parquet")) if not f.name.endswith(".idx.parquet")]
+    def one(f: Path) -> Dict[str, int]:
+        vc = pc.value_counts(_pq.read_table(f, columns=["ticker"]).column("ticker"))
+        return {str(r["values"]).strip().upper(): int(r["counts"]) for r in vc.to_pylist()}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for part in ex.map(one, files):
+            for t, n in part.items():
+                if want is None or t in want:
+                    w[t] = w.get(t, 0) + n
+    return w
+
+
+def _shard_worker(p: Dict[str, Any]) -> Dict[str, Any]:
+    """One shard: read its tickers, adjust, write. Ticker layout -> final <TICKER>/... files; market layout ->
+    per-period part files under the shard's parts directory (stitched by _merge_market_parts)."""
+    try:
+        px = _read_prices(Path(p["prices"]), tickers=p["tickers"], start=p["start"], end=p["end"])
+    except SystemExit:
+        px = pd.DataFrame()
+    if px.empty:                                   # e.g. a --start/--end window with none of this shard's rows
+        return {"shard": p["shard"], "rows": 0, "summary": []}
+    px_tr, stats, use_split_base = _adjust_frame(px, p["sm"], p["spl"], p["div"], p["adjust"], workers=1)
+    _write_partitioned_lake(px_tr, Path(p["outdir"]), p["granularity"], p["write_threads"], p["materialize"], layout=p["layout"])
+    return {"shard": p["shard"], "rows": int(len(px_tr)), "summary": _summary_rows(stats, px_tr, p["adjust"], use_split_base)}
+
+
+def _merge_one_period(task: Tuple[List[str], str]) -> int:
+    parts, outpath = task
+    df = pd.concat([pd.read_parquet(f) for f in parts], ignore_index=True)
+    df = df.sort_values(["ticker", "datetime"], kind="stable").reset_index(drop=True)
+    _write_one_parquet(Path(outpath), df)
+    return len(df)
+
+
+def _merge_market_parts(parts_root: Path, outdir: Path, workers: int) -> int:
+    """Market layout: each shard wrote <parts_root>/<shard>/<YYYY>/<MM>[/<DD>].parquet for its tickers; stitch each
+    period's parts into <outdir>/<YYYY>/<MM>[/<DD>].parquet (ticker-major, like the single-process writer) and drop the parts."""
+    shards = sorted(d for d in parts_root.iterdir() if d.is_dir())
+    rels = sorted(set(str(f.relative_to(sh)) for sh in shards for f in sh.rglob("*.parquet")))
+    tasks = [([str(sh / rel) for sh in shards if (sh / rel).exists()], str(outdir / rel)) for rel in rels]
+    n = 0
+    with ProcessPoolExecutor(max_workers=max(1, int(workers)), initializer=_worker_init,
+                             initargs=(_arrow_threads_per_worker(workers),)) as ex:
+        for k in _tqdm(ex.map(_merge_one_period, tasks), total=len(tasks), desc=f"Merging period files (x{workers} processes)"):
+            n += k
+    shutil.rmtree(parts_root, ignore_errors=True)
+    return n
+
+
+def _run_batch_sharded(args, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, layout: str,
+                       tickers: Optional[List[str]]) -> Path:
+    """Batch build over `args.workers` processes. Each process owns a slice of holders end to end (read, holder ids,
+    split and dividend factors, renormalisation, write), so reading and writing scale with cores as well as the
+    per-id maths. Output is identical to the single-process path (--workers 1)."""
+    weights = _ticker_weights(args.prices, layout, tickers)
+    if not weights:
+        raise SystemExit(f"No tickers found under {args.prices}" + (" for the requested list" if tickers else ""))
+    shards = _plan_shards(sorted(weights), sm, weights, args.workers)
+    parts_root = args.outdir / "_parts"
+    if layout == "market":
+        shutil.rmtree(parts_root, ignore_errors=True)
+    write_threads = max(1, int(args.write_workers) // len(shards))
+    def _slice(events: pd.DataFrame, tset: set) -> pd.DataFrame:   # only this shard's events (the per-id workers scan the table)
+        return events[events["ticker"].isin(tset)] if "ticker" in events.columns else events
+    payloads = []
+    for k, tk in enumerate(shards):
+        tset = set(tk)
+        payloads.append({"shard": k, "tickers": tk, "prices": str(args.prices), "start": args.start, "end": args.end,
+                         "sm": sm, "spl": _slice(spl, tset), "div": _slice(div, tset),
+                         "adjust": args.adjust, "materialize": args.materialize, "granularity": args.granularity,
+                         "layout": layout, "write_threads": write_threads,
+                         "outdir": str(parts_root / f"shard{k:03d}") if layout == "market" else str(args.outdir)})
+    print(f"Sharded build: {len(weights)} tickers in {len(shards)} shards ({layout} layout, {len(shards)} processes)")
+    results = []
+    with ProcessPoolExecutor(max_workers=len(shards), initializer=_worker_init,
+                             initargs=(_arrow_threads_per_worker(len(shards)),)) as ex:
+        futs = [ex.submit(_shard_worker, p) for p in payloads]
+        for fut in _tqdm(as_completed(futs), total=len(futs), desc=f"Shards (x{len(shards)} processes)"):
+            results.append(fut.result())
+    if layout == "market":
+        _merge_market_parts(parts_root, args.outdir, args.workers)
+    print(f"Adjusted rows: {sum(r['rows'] for r in results):,}")
+    return _write_summary_rows([row for r in results for row in r["summary"]], args.outdir)
 
 
 # =============================================================
@@ -1411,9 +1659,11 @@ def main():
     ap.add_argument("--outdir", type=Path, required=True,
                     help="Output directory for adjusted parquet lake")
     ap.add_argument("--workers", type=int, default=_default_workers(),
-                    help="Parallel workers for factor building (per-id). Set 1 to disable.")
+                    help="Day batch mode: processes, each building one slice of holders end to end (read, factors, "
+                         "write). Set 1 for the single-process reference path.")
     ap.add_argument("--write-workers", type=int, default=_default_write_workers(),
-                    help="Parallel threads for writing parquet files. Set 1 to disable.")
+                    help="Minute streaming: processes writing day files. Day batch: writer threads, shared out over "
+                         "the --workers processes. Set 1 to disable.")
     ap.add_argument("--adjust", choices=["splits", "dividends", "both"], default="both",
                     help="Which adjustments to apply (default: both)")
     ap.add_argument("--materialize", choices=["minimal","close","ohlc"], default="minimal",
@@ -1516,33 +1766,15 @@ def main():
 
     # ===== Batch path (OK for day lakes) =====
 
-    px  = _read_prices(args.prices, tickers=tickers, start=args.start, end=args.end)
-    px_id = _attach_id(px, sm)
-    px_id["close_split"]  = px_id["close"]
-    px_id["volume_split"] = px_id["volume"]
-
-    stats: dict = {}
-    if args.adjust in ("splits", "both"):
-        F      = _build_split_factors(px_id, spl, stats=stats, workers=args.workers)
-        px_spl = _apply_splits(px_id, F)
-    else:
-        px_spl = px_id.copy()
-
-    if args.adjust in ("dividends", "both"):
-        use_split_base = (args.adjust == "both")
-        G     = _build_dividend_factors(px_spl, div, use_split_base=use_split_base, stats=stats, workers=args.workers)
-        px_tr = _apply_dividends(px_spl, G, use_split_base=use_split_base)
-        px_tr = _renormalize_tr_to_one(px_tr, use_split_base=use_split_base)
-    else:
-        px_tr = px_spl.copy()
-        px_tr["tr_price_factor"] = 1.0
-        px_tr["close_tr"] = px_tr["close_split"]
-        use_split_base = False
-
     args.outdir.mkdir(parents=True, exist_ok=True)
-    _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize, layout=layout)
+    if args.workers > 1:
+        csv_path = _run_batch_sharded(args, sm, spl, div, layout, tickers)
+    else:
+        px = _read_prices(args.prices, tickers=tickers, start=args.start, end=args.end)
+        px_tr, stats, use_split_base = _adjust_frame(px, sm, spl, div, args.adjust, workers=1)
+        _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize, layout=layout)
+        csv_path = _write_summary_csv(stats, args.outdir, px_tr, args.adjust, use_split_base)
 
-    csv_path = _write_summary_csv(stats, args.outdir, px_tr, args.adjust, use_split_base)
     if args.verbose:
         summary = pd.read_csv(csv_path, parse_dates=[
             "last_split_raw_date", "last_split_aligned_day",

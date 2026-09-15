@@ -20,9 +20,9 @@ Options:
   -L, --layout <auto|ticker|market>  Lake layout (default auto: detect from the unadjusted lake)
   -s, --start YYYY-MM-DD        Optional start date filter
   -e, --end   YYYY-MM-DD        Optional end date filter
-  -w, --workers N               CPU workers (day mode; default 90)
-  -W, --write-workers N         Writers (default 8)
-  -S, --stream-read-workers N   Minute streaming readers (default 8, minute only)
+  -w, --workers N               Day mode: processes, one slice of holders each (default: core count)
+  -W, --write-workers N         Minute streaming: writer processes (default 8); day mode: writer threads
+  -S, --stream-read-workers N   Minute streaming: reader processes for the day-edge scan (default 8)
   -m, --materialize <minimal|close|ohlc>  (default minimal; ohlc recommended)
   -v, --verbose
   -n, --dry-run                 Print the command, don’t run
@@ -49,7 +49,7 @@ REFDIR=""
 LAYOUT=""
 START=""
 END=""
-WORKERS=90
+WORKERS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)"
 WRITE_WORKERS=8
 STREAM_READ_WORKERS=8
 MATERIALIZE="minimal"
