@@ -8,6 +8,7 @@ lake/
 lake_adj/
 refdata/
 data/ref_data/
+data/universes/
 manifest_*.json
 *.log
 

@@ -1,6 +1,6 @@
 # Polygon.io Data Lake Builder
 
-A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull **refdata** (splits/dividends/security master), and build **adjusted** lakes (split-adjusted + total-return). Scripts are reproducible and notebook-friendly.
+A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 100 regression tests, several of them known-answer checks against real data.
 
 <p align="center">
 <img src="figures/adjust.png" alt="NVDA day bars: unadjusted close vs split-adjusted close vs total-return close, base 100" width="1000">
@@ -12,19 +12,17 @@ A pipeline to turn **Polygon.io flat files** into a local **Parquet lake**, pull
 
 ## Features
 
-- Reproducible **unadjusted** lakes (minute/day).
+- **Unadjusted** lakes (minute/day) partitioned on the ET trading date, in a per-ticker or a whole-market (`--layout market`) layout, with bounded memory.
 - **Refdata** in a few hundred requests for any universe size: market-wide tickers (active + delisted), splits and dividends tables, refreshed incrementally; collection files derived by filtering. **Holder ids** (FIGI → CIK → ticker) keep a recycled ticker's previous company separate.
-- **Adjusted** lakes (split-adjusted OHLC/VWAP/Volume + total-return).
+- **Adjusted** lakes (split-adjusted OHLC/volume, VWAP when the source carries it, + total-return) in either layout: a batch path for day lakes, a streaming path for minute lakes.
 - Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles, and a **point-in-time universe** builder (membership per rebalance date from trailing dollar volume; survivorship-free).
-- A schema-safe loader module for notebooks/QA plots.
+- Schema- and layout-aware loaders (`polygon_ingest.lake_io`) for notebooks and research joins.
 
-> **Pipeline steps**
+> **Two workflows**
 >
-> 1) Download Polygon flat files  
-> 2) Download/build ticker lists  
-> 3) Build unadjusted Parquet lakes (**needs ticker lists**)  
-> 4) Pull refdata from Polygon (**needs ticker lists**)  
-> 5) Build adjusted Parquet lakes from unadjusted + refdata (**needs ticker lists**)
+> **A. Collection (from a ticker list):** 1) flat files → 2) ticker list (Step 2, A or B) → 3) `poly bars --watch …` → 4) `pull_ref_data.sh` (market tables, derived for the list) → 5) `build_adjusted_lake.sh`. Output: `lake_adj/<tf>/<collection>_adjusted/<TICKER>/…`.
+>
+> **B. Whole universe (research):** 1) flat files → 3) `poly bars --layout market` (no ticker list: one file per period holding every ticker) → 4) `pull_ref_data.sh` (the same market tables) → 5) `factor_builder.py` over every ticker (layout detected) → 2) `build_pit_universe.py` for point-in-time membership → **join membership (date, ticker) against the adjusted lake at research time** (see *Research usage*). Nothing in B needs a ticker list.
 
 ---
 
@@ -101,11 +99,13 @@ repo_polygonio/
 │  └─ extract_tickers_from_flatfiles.py  # discover tickers from CSV.GZ flatfiles
 │
 ├─ data/
-│  └─ ticker_lists/                      # generated universe lists (*.json / *.txt)
+│  ├─ ticker_lists/                      # static ticker lists (*.json / *.txt)
+│  └─ universes/<name>/                  # point-in-time membership, segments, summary (generated, git-ignored)
 │
 ├─ refdata/
 │  ├─ _market/                           # market-wide tickers / splits / dividends (generated, shared)
-│  └─ spx_ndx_combined/                  # derived for the collection (SM/splits/divs)
+│  ├─ spx_ndx_combined/                  # derived for a collection (security master / splits / dividends)
+│  └─ all/                               # derived for every ticker in the lake (whole-universe workflow)
 │
 ├─ lake/                                 # unadjusted lakes (generated, git-ignored)
 │  ├─ minute/<collection>/<TICKER>/<YYYY>/<MM>/<DD>.parquet
@@ -113,12 +113,18 @@ repo_polygonio/
 │  ├─ day/all/<YYYY>/<MM>.parquet         # --layout market: every ticker, one file per month
 │  └─ minute/all/<YYYY>/<MM>/<DD>.parquet # --layout market: every ticker, one file per day (+ <DD>.idx.parquet)
 │
-├─ lake_adj/                             # adjusted lakes (generated, git-ignored)
+├─ lake_adj/                             # adjusted lakes (generated, git-ignored; layout mirrors the input)
 │  ├─ minute/<collection>_adjusted/<TICKER>/<YYYY>/<MM>/<DD>.parquet
-│  └─ day/<collection>_adjusted/<TICKER>/<YYYY>/<MM>.parquet
+│  ├─ day/<collection>_adjusted/<TICKER>/<YYYY>/<MM>.parquet
+│  ├─ day/all_adjusted/<YYYY>/<MM>.parquet          # market layout, every ticker, holder `id` per row
+│  └─ minute/all_adjusted/<YYYY>/<MM>/<DD>.parquet  # market layout (+ <DD>.idx.parquet)
 │
-└─ notebooks/
-   └─ 03_load_data_inspect_adjustment.ipynb  # QA: unadj vs split-adj vs TR
+├─ notebooks/
+│  ├─ 01_index_universes.ipynb
+│  ├─ 02_extract_tickers.ipynb
+│  └─ 03_load_data_inspect_adjustment.ipynb  # QA: unadj vs split-adj vs TR
+├─ tests/                                # pytest, 100 tests: adjustment math, holder ids, layouts, pullers, universe
+└─ figures/adjust.png                    # README QA figure, built from real refdata
 ```
 
 ---
@@ -170,7 +176,7 @@ Each month-end, eligible common stocks are ranked by trailing 63-day dollar volu
 
 ---
 
-### Step 3 — Create the **unadjusted** Parquet lakes (needs ticker lists)
+### Step 3 — Create the **unadjusted** Parquet lakes (ticker list for a collection; none for the whole universe)
 
 Use the `poly` CLI (installed with this package) or the legacy shims.
 
@@ -224,7 +230,7 @@ The loaders and Step 5 detect the layout from the directory structure (`<YYYY>/`
 
 ---
 
-### Step 4 — Pull **refdata** from Polygon (needs ticker lists)
+### Step 4 — Pull **refdata** from Polygon (market-wide; a ticker list only selects what gets derived)
 
 Make sure `POLYGON_API_KEY` is set (via `.env` or env var) and run:
 
@@ -258,7 +264,7 @@ Polygon returns no FIGI for some delisted holders, hence the CIK fallback. Point
 
 ---
 
-### Step 5 — Build the **adjusted** lakes (needs ticker lists)
+### Step 5 — Build the **adjusted** lakes
 
 Use the unified builder:
 
@@ -284,25 +290,70 @@ Defaults when `-p` / `-o` are omitted. Note these point at `~/data/...`, **not**
 `-m` (`--materialize`) options:
 - `minimal` → only what’s needed (e.g., `close_tr`)
 - `close` → adds `close_sa`
-- `ohlc` → adds all `*_sa` (`open_sa`, `high_sa`, `low_sa`, `close_sa`, `vwap_sa`, `volume_sa`) + `close_tr` **(recommended)**
+- `ohlc` → adds all `*_sa` (`open_sa`, `high_sa`, `low_sa`, `close_sa`, `volume_sa`; `vwap_sa` only when the source has VWAP — Polygon's flat files don't) + `close_tr` **(recommended)**
 
-Adjusted output mirrors unadjusted (and is what the QA notebook expects):
+Adjusted output mirrors the unadjusted layout (and is what the QA notebook expects):
 - `lake_adj/day/<collection>_adjusted/<TICKER>/<YYYY>/<MM>.parquet`
 - `lake_adj/minute/<collection>_adjusted/<TICKER>/<YYYY>/<MM>/<DD>.parquet`
+- market layout: `lake_adj/day/all_adjusted/<YYYY>/<MM>.parquet`, `lake_adj/minute/all_adjusted/<YYYY>/<MM>/<DD>.parquet`
+
+Every adjusted row carries `id`, the holder (company) of the ticker on that date — see *Notes & Conventions*.
+
+**Whole universe (market layout).** The wrapper script keys on a ticker list in `data/ticker_lists/`, so call the builder directly; the layout is detected from the unadjusted lake and mirrored on output:
+
+```bash
+# every ticker in the market day lake, then refdata for all of them derived from the market tables (no requests):
+python -c "import glob,json,pandas as pd; t=set().union(*(set(pd.read_parquet(f,columns=['ticker']).ticker) for f in glob.glob('lake/day/all/*/*.parquet'))); json.dump(sorted(t),open('data/universes/all_tickers.json','w'))"
+python legacy_scripts/run_pullers.py --bulk --tables "" --no-normalize \
+  --tickers data/universes/all_tickers.json --outdir refdata/all
+
+python legacy_scripts/factor_builder.py \
+  --prices ./lake/day/all --refdir refdata/all \
+  --granularity day --outdir ./lake_adj/day/all_adjusted \
+  --adjust both --materialize ohlc --workers 12 --write-workers 8
+# -> lake_adj/day/all_adjusted/<YYYY>/<MM>.parquet, every ticker, holder `id`s
+
+python legacy_scripts/factor_builder.py \
+  --prices ./lake/minute/all --refdir refdata/all \
+  --granularity minute --minute-stream --outdir ./lake_adj/minute/all_adjusted \
+  --adjust both --materialize ohlc --write-workers 8 --stream-read-workers 8
+```
+
+The day **batch** path loads the whole lake into memory (46 M rows ≈ 25 GB peak); minute lakes use the **streaming** path, one day file at a time. Flags worth knowing: `-r/--refdir` and `-L/--layout` on the wrapper (`--refdir`, `--layout` on the builder), and `--detect-split-gaps`, which infers a split from an overnight price gap for tickers with no splits row — **off by default**, because on the full market it fires on warrants and penny stocks and the market splits table already holds every real split.
 
 ---
 
-## Notebook / QA
+## Notebook / QA and research usage
 
 Use `notebooks/03_load_data_inspect_adjustment.ipynb` to load and plot:
 - **Unadjusted `close`**
 - **Split-adjusted `close_sa`**
 - **Total-return `close_tr`**
 
-The loader (`polygon_ingest.lake_io`) is schema-safe:
-- Accepts `datetime` or `date/timestamp`.
-- For **day** data, merges on **calendar date** (not exact time).
-- Maps `*_split → *_sa` if adjusted files use that naming.
+The loaders (`polygon_ingest.lake_io`) are schema- and layout-aware:
+- Accept `datetime` or `date/timestamp` and read only the columns a file has.
+- For **day** data, merge on **calendar date** (not exact time); minute data on the exact timestamp.
+- Map `*_split → *_sa` if adjusted files use that naming.
+- Detect the ticker vs market layout of each root and push a parquet filter on `ticker` for market files; minute day files' `.idx.parquet` sidecars skip days a symbol is absent from.
+
+**Research usage — join the point-in-time universe with the adjusted market lake**
+
+```python
+import pandas as pd
+from polygon_ingest.lake_io import load_polygonio_lake
+from polygon_ingest.universe import expand_daily
+
+mem = pd.read_parquet("data/universes/top1000_cs_monthly/membership.parquet")
+px = load_polygonio_lake(mem["ticker"].unique(), "2005-01-01", "2024-12-31",
+                         "lake_adj/day/all_adjusted", granularity="day",
+                         source_tz="UTC")                       # adjusted lakes store tz-naive UTC
+px["date"] = px["datetime"].dt.tz_convert("US/Eastern").dt.normalize().dt.tz_localize(None)
+daily = expand_daily(mem, px["date"].unique())                 # membership on every trading day
+panel = px.merge(daily, on=["date", "ticker"], how="inner")    # survivorship-free panel
+ret = panel.sort_values(["id", "date"]).groupby("id")["close_tr"].pct_change()   # total returns per company
+```
+
+Group by `id` (the company), not by `ticker`: a recycled symbol's two companies stay separate and a rename (`FB` → `META`) stays one series.
 
 ---
 
@@ -320,6 +371,9 @@ The loader (`polygon_ingest.lake_io`) is schema-safe:
   POLYGON_MIN_INTERVAL_SEC=12.5 bash scripts/pull_ref_data.sh   # or put the variable in .env
   ```
   (about an hour or two for the full market on the free tier, minutes on a paid plan). In per-ticker mode (`POLYGON_PER_TICKER=1`) tickers whose pull failed after retries are listed in `refdata/<collection>/_splits_failed_tickers.txt` / `_dividends_failed_tickers.txt`; do **not** build an adjusted lake while the splits list is non-empty — a ticker with no splits row comes out **unadjusted across its splits**.
+
+- **Adjusted-lake timestamps look shifted by 4–5 hours**  
+  Adjusted lakes store `datetime` as tz-naive **UTC** (the unadjusted lakes are tz-aware US/Eastern). `load_series` handles both; when calling `load_polygonio_lake` on an adjusted lake pass `source_tz="UTC"`.
 
 - **Empty plots / empty merges**  
   Double-check notebook paths match your lakes. For **day**, both lakes must overlap on dates.
