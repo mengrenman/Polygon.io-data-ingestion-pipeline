@@ -4,10 +4,15 @@ version = "0.1.0"
 description = "Polygon.io data ingestion → Parquet lake (minute/day + corp actions)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["pandas>=2.2","pyarrow>=16","numpy","tqdm","tenacity>=8","loguru>=0.7","typer>=0.12","polygon-api-client>=1.13","python-dotenv>=1.0"]
+# Runtime: everything the ingester, the pullers and the adjuster import. (tenacity, loguru and python-dotenv
+# were declared but never imported - retries and logging are hand-rolled, and .env is sourced by the shell
+# wrapper - so they are gone.)
+dependencies = ["pandas>=2.2", "pyarrow>=16", "numpy", "tqdm", "typer>=0.12", "polygon-api-client>=1.13"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# QA notebooks and scripts/build_index_universes.py (pd.read_html needs lxml)
+notebooks = ["matplotlib", "ipykernel", "jupyterlab", "lxml"]
 
 [project.scripts]
 poly = "polygon_ingest.cli:app"

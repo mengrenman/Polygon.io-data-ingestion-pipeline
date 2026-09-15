@@ -2,9 +2,15 @@
 import typer
 from pathlib import Path
 from .ingest import run_ingest
-from .corp_actions import fetch_splits, fetch_dividends
 
-app = typer.Typer(help="Polygon.io CSV.GZ → Parquet lake (Route B: direct functions)")
+app = typer.Typer(help="Polygon.io CSV.GZ → Parquet lake. Reference data (splits/dividends/tickers) is pulled by scripts/pull_ref_data.sh.")
+
+@app.callback()
+def _root() -> None:
+    """Polygon.io flat files → Parquet lake. `poly bars` ingests; reference data is pulled by scripts/pull_ref_data.sh."""
+    # A Typer app with exactly one command becomes that command itself (`poly --tf ...`); this callback keeps
+    # `poly bars ...` as the documented invocation now that `poly actions` is gone.
+
 
 @app.command()
 def bars(
@@ -20,7 +26,8 @@ def bars(
     write_manifest: bool = typer.Option(False, help="Write manifest JSON after ingest"),
     manifest_out: Path | None = typer.Option(None, help="Manifest path (default: <out>/manifest_<tf>.json)"),
     manifest_workers: int = typer.Option(8, help="Threads for manifest scan"),
-    layout: str = typer.Option("ticker", help="ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet | market: <out>/<YYYY>/<MM>[/<DD>].parquet with all tickers (whole universe)"),
+    # (no square brackets in help strings: Typer renders help with rich markup, which reads "[/<DD>]" as a closing tag)
+    layout: str = typer.Option("ticker", help="ticker: <out>/<TICKER>/<YYYY>/<MM>/<DD>.parquet (day: <MM>.parquet) | market: <out>/<YYYY>/<MM>/<DD>.parquet with all tickers (whole universe)"),
 ):
     if layout not in ("ticker", "market"):
         raise typer.BadParameter("--layout must be 'ticker' or 'market'")
@@ -30,16 +37,6 @@ def bars(
         write_manifest=write_manifest, manifest_out=manifest_out, manifest_workers=manifest_workers,
         layout=layout,
     )
-
-@app.command()
-def actions(
-    ticker: str = typer.Option(..., help="Ticker symbol, e.g., AAPL"),
-    outdir: Path = typer.Option(Path("data/ref_data"), help="Output dir for parquet"),
-):
-    outdir.mkdir(parents=True, exist_ok=True)
-    fetch_splits(ticker).to_parquet(outdir / f"{ticker}_splits.parquet", index=False)
-    fetch_dividends(ticker).to_parquet(outdir / f"{ticker}_dividends.parquet", index=False)
-    typer.echo(f"Saved splits & dividends for {ticker} → {outdir}")
 
 if __name__ == "__main__":
     app()
