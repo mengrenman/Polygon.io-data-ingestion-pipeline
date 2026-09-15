@@ -362,9 +362,11 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   appear in that day's own file. Both rows are legitimately stamped `2019-08-13 00:00` ET, so no
   ingest rule can separate them. 56 rows of 46.5 million; keep the higher-volume row, as notebook 04
   does.
-- **Exchange test symbols.** A few dozen lake tickers have no reference row; `ZVZZT` and friends quote
-  near $200,000 and rank first by dollar volume in 167 of the universe's 262 months. Exclude them
-  (`--exclude-tickers` on the universe build) before any return study.
+- **Symbols with no reference row.** 1,853 of the day lake's 33,833 tickers have none — 904 of them
+  class lines (preferred series, warrants, rights) the tickers endpoint does not carry, the rest mostly
+  exchange test symbols. `ZTEST`, `ZVZZT` and friends quote up to $500,000 and rank first by dollar
+  volume in 167 of the universe's 262 months. Exclude them (`--exclude-tickers` on the universe build)
+  before any return study.
 
 Notebook 03 loads and plots:
 - **Unadjusted `close`**
