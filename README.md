@@ -1,6 +1,6 @@
 # Polygon.io Data Lake Builder
 
-A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 131 regression tests, several of them known-answer checks against real data.
+A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 167 regression tests, several of them known-answer checks against real data.
 
 <p align="center">
 <img src="figures/adjust.png" alt="NVDA day bars: unadjusted close vs split-adjusted close vs total-return close, base 100" width="1000">
@@ -78,6 +78,7 @@ repo_polygonio/
 │  │  ├─ ingest.py                       # CSV.GZ → Parquet lake (minute/day)
 │  │  ├─ cli.py                          # `poly bars` CLI entry (ingestion)
 │  │  ├─ lake_io.py                      # schema-safe readers for notebooks/QA
+│  │  ├─ security_type.py                # infers the security type Polygon leaves null on delisted rows
 │  │  ├─ tickers.py                      # ticker spelling: the case is the share class; matching rules
 │  │  └─ universe.py                     # point-in-time universe: segments, eligibility, membership
 │  │ 
@@ -127,7 +128,7 @@ repo_polygonio/
 │  ├─ 04_lake_inventory_and_quality.ipynb    # EDA: coverage, calendar, data-quality findings
 │  ├─ 05_universe_and_survivorship.ipynb     # EDA: point-in-time universe, survivorship priced
 │  └─ 06_minute_lake_access.ipynb            # EDA: reading 7 bn rows, sidecars, intraday profile
-├─ tests/                                # pytest, 131 tests: adjustment math, holder ids, ticker case, layouts, pullers, universe
+├─ tests/                                # pytest, 167 tests: adjustment math, holder ids, ticker case, security type, layouts, pullers, universe
 └─ figures/adjust.png                    # README QA figure, built from real refdata
 ```
 
@@ -345,8 +346,8 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
 **Known data issues these surfaced:**
 
 - **Ticker casing — fixed; the lakes were rebuilt.** Polygon encodes share class in letter case
-  (`AAp` is Alcoa's $3.75 preferred, a different security from `AAP` common; `AANw` is a warrant, a
-  trailing lowercase `p`/`w`/`r` marks a preferred series, warrant or right). `polygon_ingest` used
+  (`AAp` is Alcoa's $3.75 preferred, a different security from `AAP` common; a trailing lowercase
+  `p` marks a preferred series and `r` a right, while `w` is either a warrant or a when-issued line). `polygon_ingest` used
   to upper-case on ingest, so about 90 symbols carried two securities' bars — 29,258 duplicated
   ticker-days, 0.13% of the day lake — and the adjusted lakes gave those rows the common stock's
   holder id, splits and dividends. Symbols are now stored exactly as Polygon spells them, in the
@@ -377,15 +378,23 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "before the current owner,
   identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
   cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
-- **Security type is missing for older names, and the gap tracks survival.** Filtering on a type to drop
-  warrants and preferreds also drops companies that were acquired or went bankrupt, hardest early:
-  liquid name-days (close ≥ $5, dollar volume ≥ $1 M) in June with **no usable type** run 22.8% in 2004,
-  15.6% 2008, 9.8% 2012, 4.1% 2016, 1.8% 2020, 0.0% 2024. Two causes. Join on `ticker`, never on the
-  adjusted lake's `id` — an id join misses 38.8% of 2004 because `NOFIGI__` and `#SEG` ids have no master
-  row by design. And a matched row often carries a **null** type: 4,554 of 29,078 master rows, **100% of
-  them delisted**, so it is a miss that looks like a hit. Do not substitute `market_tickers.type`, null
-  for 18.4% of rows and worse for 2004. Closing it needs the delisted-ticker endpoints and a paid plan.
-  The 517-ticker collection is unaffected: all 517 carry a type.
+- **Security type was missing for older names — now inferred.** Polygon returns no `type` for 28.8% of
+  its delisted stock records and **none** of its active ones, so the gap tracked survival: filtering on
+  `type == "CS"` dropped companies that were acquired or went bankrupt. Liquid name-days (close ≥ $5,
+  dollar volume ≥ $1 M) in June with no usable type ran 22.8% in 2004, 15.6% 2008, 9.8% 2012, 4.1% 2016,
+  1.8% 2020, 0.0% 2024. **Polygon does not hold the field on any endpoint** — the list endpoint omits it
+  with or without a point-in-time `date`, and per-ticker details returns `type: None` for the same rows
+  (verified on Abgenix and Arkansas Best); `sic_code` is the *issuer's* industry and appears on warrants
+  and preferreds too, so it cannot separate them. A larger API budget buys throughput, not the field.
+  `polygon_ingest.security_type` infers it from the name and symbol instead, taking the market table
+  from 6,747 untyped records to 634. Measured against the 16,665 delisted records that *do* carry a
+  type: **92.3% precision, 88.6% recall, 92.5% accuracy** on "is this common stock". The residue is
+  structured notes named after their issuer (`AESC` is "The AES Corporation", a senior note), which no
+  name rule can reach. `type_source` on the security master and on `segments.parquet` says whether a
+  type is Polygon's (`polygon`), inferred (`name`, `symbol`) or still unknown; pass
+  `use_inferred_type=False` to `classify_segments` to switch it off. Still join on `ticker`, never on the
+  adjusted lake's `id` — an id join misses 38.8% of 2004 because `NOFIGI__` and `#SEG` ids have no
+  master row by design. The 517-ticker collection was never affected: all 517 carry a type.
 - **Bad ticks survive in the source data.** Polygon's own files carry occasional bad prints and a daily
   aggregate inherits them: `SIRI` on 2007-06-13 closes at 25.55 against a true range of 2.75–2.80,
   from one 22.29 print at 15:50; `SMS` on 2008-03-20 has a $0.01 low against a $26 stock. Not fixable in
@@ -466,7 +475,7 @@ Group by `id` (the company), not by `ticker`: a recycled symbol's two companies 
 - **Precision:** prices are stored as `float64`.
 - **Ticker case:** symbols are stored exactly as Polygon spells them, because the case *is* the
   share class: `AAP` is Advance Auto Parts, `AAp` the Alcoa $3.75 preferred, `AAGpT` a preferred
-  series, `AANw` a warrant. Joins between Polygon's own tables (prices, security master, splits,
+  series, `AANw` a when-issued line. Joins between Polygon's own tables (prices, security master, splits,
   dividends) are therefore exact. A **ticker list you supply** (`--watch`, `--only`, `--tickers`,
   `--exclude-tickers`, the loaders' `tickers=`) is matched exactly first and then case-insensitively
   where only one symbol could have been meant, so a list typed in capitals works and `aapl` still

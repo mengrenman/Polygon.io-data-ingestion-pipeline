@@ -35,6 +35,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from .security_type import UNTYPED_SOURCES, fill_type
 from .tickers import resolve
 
 DERIVATIVE_SUFFIX = re.compile(r"\.(U|UN|WS|W|WT|R|RT|RTS|P[A-Z]?|PR[A-Z]?)$")
@@ -95,10 +96,14 @@ def trading_segments(df: pd.DataFrame, gap_days: int = GAP_DAYS_DEFAULT) -> pd.D
 def looks_like_derivative(ticker: str) -> bool:
     """Symbol heuristic for records without a security type: preferreds, warrants, units, rights.
 
-    Polygon writes the class code in LOWER case - `AAp` is Alcoa's $3.75 preferred, `AANw` a warrant,
-    `AAGpT` preferred series T - so a lowercase letter is itself the marker, and it is the one that
-    catches most of them: 4,041 of the flat files' 33,833 symbols carry one. The dot-suffix and
+    Polygon writes the class code in LOWER case - `AAp` is Alcoa's $3.75 preferred, `AAGpT` preferred
+    series T, `AANw` a when-issued line - so a lowercase letter is itself the marker, and it is the one
+    that catches most of them: 4,041 of the flat files' 33,833 symbols carry one. The dot-suffix and
     NASDAQ fifth-letter forms cover the spellings that encode the class without case.
+
+    A `w` line is excluded here along with the rest. It is usually a when-issued duplicate of the
+    common stock rather than a separate security, which is a reason to keep it out of a universe, not
+    a claim that it is a warrant - see `polygon_ingest.security_type`.
     """
     t = str(ticker).strip()
     if any(c.islower() for c in t):
@@ -111,7 +116,8 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
                       exchanges: Optional[Sequence[str]] = None,
                       include_untyped: bool = True,
                       untyped_policy: str = "admit",
-                      exclude_tickers: Optional[Iterable[str]] = None) -> pd.DataFrame:
+                      exclude_tickers: Optional[Iterable[str]] = None,
+                      use_inferred_type: bool = True) -> pd.DataFrame:
     """
     Add `type`, `exchange`, `eligible`, `reason` to segments. The tickers table describes the CURRENT holder
     of a symbol, so its type/exchange apply to the last segment only; earlier segments (previous holders)
@@ -123,6 +129,11 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
       exclude                  never admit untyped segments.
     `exclude_tickers` removes symbols by hand (e.g. QQQ, VXX under the default policy). Review the admitted
     untyped segments in summary.json / segments.parquet.
+
+    `use_inferred_type` (default True) fills a record's missing type from its name and symbol via
+    `polygon_ingest.security_type`. Polygon returns no type for 28.8% of delisted records and none of the
+    active ones, so without this the type filter silently selects for survival. `type_source` on the output
+    says where each segment's type came from: `polygon`, `name`, `symbol`, or a reason it is still unknown.
     """
     if untyped_policy not in UNTYPED_POLICIES:
         raise ValueError(f"untyped_policy must be one of {UNTYPED_POLICIES}")
@@ -137,15 +148,22 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
         # prefer the active record; among delisted, the most recently delisted
         order = tk.assign(_a=act.astype(int), _d=pd.to_datetime(tk["delisted_utc"], errors="coerce") if "delisted_utc" in tk.columns else pd.NaT)
         tk = order.sort_values(["ticker", "_a", "_d"], ascending=[True, False, False]).drop_duplicates("ticker")
-        tk = tk[["ticker", "type", "primary_exchange", "name", "active", "holder_id"]].rename(
-            columns={"type": "rec_type", "primary_exchange": "rec_exchange", "name": "rec_name", "active": "rec_active", "holder_id": "rec_holder_id"})
+        if use_inferred_type:
+            tk = fill_type(tk)                       # Polygon's value wins; only nulls are inferred
+            tk["type"] = tk["type_inferred"]
+        else:
+            tk["type_source"] = np.where(tk["type"].notna(), "polygon", "unmatched")
+        tk = tk[["ticker", "type", "type_source", "primary_exchange", "name", "active", "holder_id"]].rename(
+            columns={"type": "rec_type", "type_source": "rec_type_source", "primary_exchange": "rec_exchange",
+                     "name": "rec_name", "active": "rec_active", "holder_id": "rec_holder_id"})
         seg = seg.merge(tk, on="ticker", how="left")
     else:
-        for c in ("rec_type", "rec_exchange", "rec_name", "rec_active", "rec_holder_id"):
+        for c in ("rec_type", "rec_type_source", "rec_exchange", "rec_name", "rec_active", "rec_holder_id"):
             seg[c] = None
 
     last = seg["is_last"].astype(bool)
     seg["type"] = np.where(last, seg["rec_type"], None)
+    seg["type_source"] = np.where(last, seg["rec_type_source"], "earlier-segment")
     seg["exchange"] = np.where(last, seg["rec_exchange"], None)
     seg["name"] = np.where(last, seg["rec_name"], None)
     seg["holder_id"] = np.where(last, seg["rec_holder_id"], None)
@@ -175,7 +193,7 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
          "untyped_current_is_fund", "exchange_excluded"], default="excluded")
     seg["eligible"] = eligible.astype(bool)
     seg["reason"] = reason
-    return seg.drop(columns=["rec_type", "rec_exchange", "rec_name", "rec_active", "rec_holder_id"])
+    return seg.drop(columns=["rec_type", "rec_type_source", "rec_exchange", "rec_name", "rec_active", "rec_holder_id"])
 
 
 # --------------------------

@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from . import SM_COLUMNS, _RATE_LIMIT_MIN_SLEEP_SEC, _clean_list, _dedupe_holders, _throttle, holder_id
+from polygon_ingest.security_type import fill_type
 from polygon_ingest.tickers import resolve
 
 BASE = "https://api.polygon.io"
@@ -312,11 +313,16 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     noid = (~active) & src["holder_id"].astype(str).str.startswith("NOFIGI__")
     ambiguous = (src[noid][["ticker", "name", "delisted_utc"]].sort_values(["ticker", "delisted_utc"]).reset_index(drop=True))
     src, active = src[~noid], active[~noid]
+    # Polygon returns no type for 28.8% of delisted records and none of the active ones, so a type
+    # filter downstream would select for survival. Fill the gap from the name and symbol, keeping
+    # Polygon's own value wherever it has one (see polygon_ingest.security_type).
+    src = fill_type(src)
     sm = pd.DataFrame({
         "ticker": src["ticker"],
         "holder_id": src["holder_id"],
         "holder_source": np.where(active, "market:active", "market:delisted"),
         "name": src["name"], "active": active, "type": src["type"],
+        "type_inferred": src["type_inferred"], "type_source": src["type_source"],
         "composite_figi": src["composite_figi"], "share_class_figi": src["share_class_figi"], "cik": src["cik"],
         "locale": src["locale"], "currency_name": src["currency_name"],
         "primary_exchange": src["primary_exchange"], "market": src["market"],

@@ -152,10 +152,12 @@ def _ts(x) -> pd.Timestamp:
     return pd.NaT if pd.isna(t) else t.tz_convert(None).normalize()
 
 
-SM_COLUMNS = ["ticker", "holder_id", "holder_source", "name", "active", "type",
+SM_COLUMNS = ["ticker", "holder_id", "holder_source", "name", "active", "type", "type_inferred", "type_source",
               "composite_figi", "share_class_figi", "cik", "locale", "currency_name", "primary_exchange", "market",
               "list_date", "delisted_utc", "effective_start", "effective_end", "anchor_date", "updated",
               "start_confirmed", "end_confirmed"]
+# `type` is Polygon's, null for 28.8% of delisted records; `type_inferred` fills those from the name and
+# symbol and `type_source` says which is which. See polygon_ingest.security_type.
 # Polygon's stock reference history starts here: a holder whose FIRST ticker event is on this date was simply
 # already trading (NVDA, AAPL, MSFT all show it), so such a start is NOT a real symbol adoption.
 HISTORY_START = pd.Timestamp("2003-09-10")
@@ -173,6 +175,8 @@ def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, 
         "name": getattr(d, "name", None),
         "active": getattr(d, "active", None),
         "type": getattr(d, "type", None),
+        "type_inferred": getattr(d, "type", None),     # details carries no better evidence than `type`
+        "type_source": "polygon" if getattr(d, "type", None) else "unmatched",
         "composite_figi": figi,
         "share_class_figi": getattr(d, "share_class_figi", None),
         "cik": cik,

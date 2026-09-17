@@ -4,8 +4,9 @@
 Ticker spelling: in Polygon's data the letter case of a symbol is *information*, not noise.
 
 `AAP` is Advance Auto Parts (common stock); `AAp` is the Alcoa Inc. $3.75 preferred. A lowercase
-letter in the suffix is a class code - `p` a preferred series (`AAGpT`), `w` a warrant (`AANw`),
-`r` a right. The day flat files hold 33,833 distinct symbols, 4,041 of them with a lowercase
+letter in the suffix is a class code - `p` a preferred series (`AAGpT`), `r` a right, and `w` either
+a warrant (`TMCWW`) or a when-issued line (`AANw` is Aaron's when-issued, not a warrant; Polygon types
+those as common stock). The day flat files hold 33,833 distinct symbols, 4,041 of them with a lowercase
 letter, and 125 of those collide with another symbol once upper-cased. Upper-casing therefore
 merges two securities' bars into one series; it cost the day lake 29,258 duplicated ticker-days.
 
