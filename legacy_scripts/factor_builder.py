@@ -118,7 +118,7 @@ def _read_prices(path: Path,
                 if ticker_from_path is None:
                     ticker_from_path = file_path.parent.name
                 df["ticker"] = ticker_from_path
-        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df["ticker"] = _norm_ticker(df["ticker"])
 
         # Map Polygon shorthand
         if "close" not in df.columns and "c" in df.columns:
@@ -161,7 +161,7 @@ def _read_prices(path: Path,
         if end:
             df = df[df["datetime"] <= pd.to_datetime(end)]
         if tickset:
-            df = df[df["ticker"].isin(tickset)]
+            df = df[_wanted_mask(df["ticker"], tickset)]
 
         return df[["datetime", "ticker", "close", "volume",
                    *[c for c in ("open","high","low") if c in df.columns]]]
@@ -197,7 +197,7 @@ def _read_prices(path: Path,
 
     out = pd.concat(dfs, ignore_index=True)
     out["datetime"] = pd.to_datetime(out["datetime"]).dt.tz_localize(None)
-    out["ticker"] = out["ticker"].astype(str).str.strip().str.upper()
+    out["ticker"] = _norm_ticker(out["ticker"])
     return out
 
 
@@ -208,6 +208,29 @@ def _read_prices(path: Path,
 # =============================================================
 # Holder ids: the company behind a ticker on a date (FIGI -> CIK -> ticker)
 # =============================================================
+
+def _norm_ticker(s: pd.Series) -> pd.Series:
+    """Ticker column -> stripped, CASE PRESERVED.
+
+    Polygon encodes share class in the letter case of the symbol: `AAp` is Alcoa's $3.75 preferred,
+    a different security from `AAP` (Advance Auto Parts); `AANw` is a warrant. Upper-casing merges
+    them into one series under one holder id, so the pipeline keeps the source spelling everywhere
+    and folds case only when matching a user-supplied watchlist (see `_wanted_mask`).
+    """
+    return s.astype(str).str.strip()
+
+
+def _wanted_mask(values: pd.Series, wanted: Optional[Iterable[str]]) -> pd.Series:
+    """Case-insensitive membership test for a USER-SUPPLIED ticker list.
+
+    Watchlists are written upper-case by convention (`data/ticker_lists/*.json`), while the lake
+    preserves Polygon's spelling, so matching folds case even though storage does not.
+    """
+    if wanted is None:
+        return pd.Series(True, index=values.index)
+    want = {str(t).strip().casefold() for t in wanted}
+    return values.astype(str).str.strip().str.casefold().isin(want)
+
 
 def _holder_id(figi, cik, ticker) -> str:
     """
@@ -236,7 +259,7 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
     from a `--probe-dates` lookup). Accepts the old puller output (no holder_id / FIGI columns) as well.
     """
     s = sm.copy()
-    s["ticker"] = s["ticker"].astype(str).str.strip().str.upper()
+    s["ticker"] = _norm_ticker(s["ticker"])
     for c in ("composite_figi", "cik", "holder_id"):
         if c not in s.columns:
             s[c] = pd.NA
@@ -273,6 +296,113 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+RECYCLE_GAP_DAYS = 60
+
+def _segment_id(ticker: str, seg: int) -> str:
+    """Id for a trading segment that predates the current holder of a recycled symbol."""
+    return f"NOFIGI__{ticker}#SEG{int(seg)}"
+
+
+def _is_segment_id(gid) -> bool:
+    return isinstance(gid, str) and gid.startswith("NOFIGI__") and "#SEG" in gid
+
+
+def _price_segments(tickers, days, gap_days: int = RECYCLE_GAP_DAYS) -> pd.DataFrame:
+    """Cut each ticker's trading history where it stopped trading for `gap_days` or more.
+
+    A symbol that goes quiet for months and comes back is almost always a **recycled ticker**: the
+    exchange reassigned it to a different company. `ARM` printed bars from 2003 and Arm Holdings plc
+    did not list until September 2023; `COIN` traded in 2007 and Coinbase listed in 2021. Returns one
+    row per (ticker, segment) with the segment's first and last trading day.
+
+    The same 60-day rule is used by `polygon_ingest.universe.trading_segments`, where it was chosen
+    because Bear Stearns' symbol was reused after a 69-day gap.
+    """
+    d = pd.DataFrame({"ticker": np.asarray(tickers), "d": pd.to_datetime(np.asarray(days))}).drop_duplicates()
+    if d.empty:
+        return pd.DataFrame(columns=["ticker", "seg", "start", "end"])
+    d = d.sort_values(["ticker", "d"])
+    gap = d.groupby("ticker", sort=False)["d"].diff().dt.days
+    d["seg"] = (gap.fillna(0) >= int(gap_days)).groupby(d["ticker"], sort=False).cumsum().astype(int)
+    out = d.groupby(["ticker", "seg"], as_index=False)["d"].agg(start="min", end="max")
+    return out.sort_values(["ticker", "seg"]).reset_index(drop=True)
+
+
+def _recyclable_tickers(sm: pd.DataFrame) -> set:
+    """Tickers whose whole history would otherwise be credited to one UNCONFIRMED holder.
+
+    The security master carries a confirmed start only when a real ticker change or delisting was
+    observed (`--probe-dates` / `--events`). Without one, `_assign_holder_ids` gives today's company
+    every bar the symbol ever printed. Those are exactly the tickers where a trading gap is the only
+    evidence of a previous owner, so segmentation is limited to them: a ticker with several known
+    holders, or with a confirmed window, keeps the existing date-based logic untouched.
+    """
+    smn = _normalize_sm(sm)
+    if smn.empty:
+        return set()
+    n = smn.groupby("ticker")["holder_id"].nunique()
+    single = smn[smn["ticker"].map(n) == 1]
+    return set(single.loc[~single["start_confirmed"].fillna(False).astype(bool), "ticker"])
+
+
+def _recycled_segments(tickers, days, sm: pd.DataFrame, gap_days: int = RECYCLE_GAP_DAYS) -> pd.DataFrame:
+    """Segments that need their own id: every segment except the last, for recyclable tickers only."""
+    if gap_days <= 0:
+        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
+    cand = _recyclable_tickers(sm)
+    if not cand:
+        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
+    t = pd.Series(np.asarray(tickers), dtype="object")
+    keep = t.isin(cand).to_numpy()
+    if not keep.any():
+        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
+    segs = _price_segments(t[keep].to_numpy(), np.asarray(days)[keep], gap_days)
+    if segs.empty:
+        return segs.assign(id=pd.Series(dtype=object), is_last=pd.Series(dtype=bool))
+    last = segs.groupby("ticker")["seg"].transform("max")
+    segs["is_last"] = segs["seg"].eq(last)
+    segs = segs[segs.groupby("ticker")["seg"].transform("size") > 1]        # only genuinely split histories
+    if segs.empty:
+        return segs.assign(id=pd.Series(dtype=object))
+    segs["id"] = pd.Series([None if r.is_last else _segment_id(r.ticker, r.seg) for r in segs.itertuples()],
+                           index=segs.index, dtype=object)
+    return segs.reset_index(drop=True)
+
+
+def _segment_lookup(segs: pd.DataFrame):
+    """(ticker -> (starts, ends, ids)) for fast containment tests."""
+    out = {}
+    for tk, g in segs.groupby("ticker", sort=False):
+        g = g.sort_values("seg")
+        out[tk] = (g["start"].to_numpy("datetime64[ns]"), g["end"].to_numpy("datetime64[ns]"),
+                   g["id"].to_numpy(dtype=object))
+    return out
+
+
+def _apply_segment_ids(ids: pd.Series, tickers, dates, segs: pd.DataFrame) -> pd.Series:
+    """Override the holder id on rows that fall in a pre-last segment of a recycled ticker."""
+    if segs is None or segs.empty:
+        return ids
+    look = _segment_lookup(segs)
+    tk = np.asarray(tickers, dtype=object)
+    dt = pd.to_datetime(pd.Series(dates)).to_numpy("datetime64[ns]")
+    out = ids.to_numpy(dtype=object).copy()
+    for i, t in enumerate(tk):
+        w = look.get(t)
+        if w is None:
+            continue
+        starts, ends, sid = w
+        j = np.searchsorted(ends, dt[i], side="left")        # first segment whose end >= this date
+        if j >= len(sid):
+            j = len(sid) - 1                                  # after the last segment: current holder
+        elif dt[i] < starts[j] and j > 0:
+            j -= 1                                            # in a gap: belongs to the segment it follows
+        v = sid[j]
+        if isinstance(v, str) and v:      # the last segment stores no id: it keeps the real holder
+            out[i] = v
+    return pd.Series(out, index=ids.index, dtype=object)
+
+
 def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.Series:
     """
     Holder id for each row of `df` (needs 'ticker' and `date_col`), from the security master.
@@ -289,7 +419,7 @@ def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.
     """
     smn = _normalize_sm(sm)
     t = pd.DataFrame({
-        "ticker": df["ticker"].astype(str).str.strip().str.upper().to_numpy(),
+        "ticker": _norm_ticker(df["ticker"]).to_numpy(),
         "_d": _naive_dates(df[date_col]).to_numpy(),
         "_row": np.arange(len(df)),
     })
@@ -340,8 +470,26 @@ def _assign_event_ids(events: pd.DataFrame, sm: pd.DataFrame, date_cols) -> pd.D
     dcol = next((c for c in date_cols if c in e.columns), None)
     if dcol is None:
         raise ValueError(f"events table has none of the date columns {list(date_cols)}")
-    e["ticker"] = e["ticker"].astype(str).str.strip().str.upper()
+    e["ticker"] = _norm_ticker(e["ticker"])
     e["holder_id"] = _assign_holder_ids(e, sm, dcol)
+    return e
+
+
+def _apply_event_segments(events: pd.DataFrame, segs: pd.DataFrame, date_cols) -> pd.DataFrame:
+    """Re-key corporate actions onto trading segments, so a company's splits cannot reach the bars of
+    the previous owner of its symbol. SiriusXM's 2024 reverse split must not touch 2007 Sirius bars."""
+    if segs is None or segs.empty or events.empty:
+        return events
+    dcol = next((c for c in date_cols if c in events.columns), None)
+    if dcol is None:
+        return events
+    e = events.copy()
+    # `holder_id` is what _assign_event_ids wrote and what _prep_splits/_prep_dividends turn into
+    # `event_id`; update whichever is present so the re-keying survives either call order.
+    for col in ("holder_id", "event_id"):
+        if col in e.columns:
+            e[col] = _apply_segment_ids(e[col].astype(object), _norm_ticker(e["ticker"]).to_numpy(),
+                                        _naive_dates(e[dcol]), segs)
     return e
 
 
@@ -366,7 +514,7 @@ class _EventIndex:
     def get(self, gid: str, ticker: str) -> pd.DataFrame:
         """Same rule as _events_for_holder: only a NOFIGI__ id may fall back to ticker-keyed events."""
         ev = self.by_id.get(gid)
-        if (ev is None or ev.empty) and str(gid).startswith("NOFIGI__"):
+        if (ev is None or ev.empty) and str(gid).startswith("NOFIGI__") and not _is_segment_id(gid):
             ev = self.by_ticker.get(ticker)
         return self.empty if ev is None else ev
 
@@ -378,18 +526,27 @@ def _events_for_holder(table: pd.DataFrame, gid: str, ticker: str, date_col: str
     would apply another company's splits/dividends to its prices.
     """
     ev = table[table["event_id"] == gid][cols].dropna()
-    if ev.empty and str(gid).startswith("NOFIGI__"):
+    # A segment id already collected its own events by date in _apply_event_segments; falling back to
+    # every event under the ticker would hand an earlier company the later owner's splits.
+    if ev.empty and str(gid).startswith("NOFIGI__") and not _is_segment_id(gid):
         ev = table[table["ticker"] == ticker][cols].dropna()
     return ev.sort_values(date_col)
 
 
-def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame) -> pd.DataFrame:
-    """Attach the holder id per price row; never drops rows (out-of-window rows go to the nearest holder)."""
+def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame,
+               segments: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Attach the holder id per price row; never drops rows (out-of-window rows go to the nearest holder).
+
+    `segments` (from `_recycled_segments`) moves bars printed before a recycled symbol's current
+    owner onto their own id, so a 2003 `ARM` bar is not credited to a company that listed in 2023.
+    """
     prx = prx.copy()
-    prx["ticker"] = prx["ticker"].astype(str).str.strip().str.upper()
+    prx["ticker"] = _norm_ticker(prx["ticker"])
     prx["datetime"] = _to_naive_utc(prx["datetime"])   # tz-naive UTC
     prx["event_day"] = _trading_day(prx["datetime"])    # US/Eastern trading date
     prx["id"] = _assign_holder_ids(prx, security_master, "event_day")
+    if segments is not None and len(segments):
+        prx["id"] = _apply_segment_ids(prx["id"], prx["ticker"].to_numpy(), prx["event_day"], segments)
     return prx
 
 
@@ -413,7 +570,7 @@ def _prep_splits(splits: pd.DataFrame) -> pd.DataFrame:
         s = s.rename(columns={"T": "ticker"})
     if "ticker" not in s.columns:
         raise ValueError("splits is missing 'ticker'")
-    s["ticker"] = s["ticker"].astype(str).str.strip().str.upper()
+    s["ticker"] = _norm_ticker(s["ticker"])
 
     if "composite_figi" not in s.columns:
         s["composite_figi"] = pd.NA
@@ -435,7 +592,7 @@ def _prep_dividends(dividends: pd.DataFrame) -> pd.DataFrame:
         d = d.rename(columns={"T": "ticker"})
     if "ticker" not in d.columns:
         raise ValueError("dividends is missing 'ticker'")
-    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+    d["ticker"] = _norm_ticker(d["ticker"])
 
     if "composite_figi" not in d.columns:
         d["composite_figi"] = pd.NA
@@ -459,7 +616,7 @@ def _split_factors_for_id_worker(payload: Tuple[str, pd.DataFrame]) -> Tuple[pd.
 
     ev = s[s["event_id"] == gid][["execution_date", "ratio"]].dropna()
     used_fallback = False
-    if ev.empty and str(gid).startswith("NOFIGI__"):   # a real holder with no events gets none (see _events_for_holder)
+    if ev.empty and str(gid).startswith("NOFIGI__") and not _is_segment_id(gid):
         ev = s[s["ticker"] == tick][["execution_date", "ratio"]].dropna()
         used_fallback = True
     ev = ev.sort_values("execution_date")
@@ -527,7 +684,7 @@ def _dividend_factors_for_id_worker(payload: Tuple[str, pd.DataFrame, bool]) -> 
 
     ev = d[d["event_id"] == gid][["ex_date", "amount"]].dropna()
     used_fallback = False
-    if ev.empty and str(gid).startswith("NOFIGI__"):   # a real holder with no events gets none (see _events_for_holder)
+    if ev.empty and str(gid).startswith("NOFIGI__") and not _is_segment_id(gid):
         ev = d[d["ticker"] == tick][["ex_date", "amount"]].dropna()
         used_fallback = True
     ev = ev.sort_values("ex_date")
@@ -909,13 +1066,13 @@ def _print_aligned_summary(summary: pd.DataFrame) -> None:
 def _iter_minute_day_files(root: Path, tickers: Optional[List[str]]) -> List[Tuple[str, Path, pd.Timestamp]]:
     """Return list of (ticker, file_path, event_day) for minute lake: <root>/<TICKER>/<YYYY>/<MM>/<DD>.parquet"""
     root = Path(root)
-    tset = set([t.strip().upper() for t in tickers]) if tickers else None
+    tset = {t.strip().casefold() for t in tickers} if tickers else None
     out: List[Tuple[str, Path, pd.Timestamp]] = []
 
     for tdir in sorted([p for p in root.iterdir() if p.is_dir()]):
         # FIX: do NOT use pandas .str accessor on a Python string
-        tkr = str(tdir.name).strip().upper()
-        if tset and tkr not in tset:
+        tkr = str(tdir.name).strip()
+        if tset and tkr.casefold() not in tset:
             continue
 
         for ydir in sorted([p for p in tdir.iterdir() if p.is_dir()]):
@@ -931,11 +1088,14 @@ def _iter_minute_day_files(root: Path, tickers: Optional[List[str]]) -> List[Tup
     return out
 
 
-def _attach_id_days(days: pd.DataFrame, sm: pd.DataFrame) -> pd.DataFrame:
+def _attach_id_days(days: pd.DataFrame, sm: pd.DataFrame,
+                    segments: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Attach the holder id per (ticker, event_day, path) minute day-file; never drops days."""
     d = days.copy()
-    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+    d["ticker"] = _norm_ticker(d["ticker"])
     d["id"] = _assign_holder_ids(d, sm, "event_day")
+    if segments is not None and len(segments):
+        d["id"] = _apply_segment_ids(d["id"], d["ticker"].to_numpy(), d["event_day"], segments)
     return d[["ticker", "event_day", "id", "path"]]
 
 
@@ -951,7 +1111,7 @@ def _read_first_last_close(path: Path, ticker: Optional[str]) -> Tuple[float, fl
             ticker = None
 
     if ticker is not None and "ticker" in df.columns:
-        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df["ticker"] = _norm_ticker(df["ticker"])
         df = df[df["ticker"] == ticker]
 
     if df.empty:
@@ -1004,7 +1164,7 @@ def _build_split_factors_from_days(id_days: pd.DataFrame,
     E = None
     if edges is not None:
         E = edges.copy()
-        E["ticker"] = E["ticker"].astype(str).str.strip().str.upper()
+        E["ticker"] = _norm_ticker(E["ticker"])
 
     # One holder (company) at a time: a recycled ticker's previous company must not receive the
     # current company's splits, and each holder anchors its own factors.
@@ -1106,7 +1266,7 @@ def _prep_divs_for_stream(div: pd.DataFrame) -> pd.DataFrame:
         d["composite_figi"] = pd.NA
     d = d.rename(columns={ex:"ex_date", amt:"amount"})
     d["ex_date"] = pd.to_datetime(d["ex_date"]).dt.normalize().dt.as_unit("ns")
-    d["ticker"] = d["ticker"].astype(str).str.strip().str.upper()
+    d["ticker"] = _norm_ticker(d["ticker"])
     d["event_id"] = _event_ids(d)
     return d[["ex_date","amount","ticker","event_id"]]
 
@@ -1221,13 +1381,13 @@ def _read_day_index(path: Path, tickers: Optional[set] = None) -> pd.DataFrame:
     else:
         cols = ["ticker", "close"] + (["datetime"] if "datetime" in _pq.ParquetFile(path).schema_arrow.names else [])
         df = pd.read_parquet(path, columns=cols)
-        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df["ticker"] = _norm_ticker(df["ticker"])
         if "datetime" in df.columns:
             df = df.sort_values(["ticker", "datetime"])
         idx = _day_index(df)
-    idx["ticker"] = idx["ticker"].astype(str).str.strip().str.upper()
+    idx["ticker"] = _norm_ticker(idx["ticker"])
     if tickers is not None:
-        idx = idx[idx["ticker"].isin(tickers)]
+        idx = idx[idx["ticker"].astype(str).str.casefold().isin({str(t).casefold() for t in tickers})]
     return idx
 
 def _scan_day_edges_market(files: List[Tuple[Path, pd.Timestamp]], tickers: Optional[List[str]] = None,
@@ -1238,7 +1398,7 @@ def _scan_day_edges_market(files: List[Tuple[Path, pd.Timestamp]], tickers: Opti
       edges   (ticker, event_day, first_close, last_close, prev_last, raw_gap) - for split-gap detection and the
               dividend prior-day base, same columns as _scan_day_edges.
     """
-    tset = set(t.strip().upper() for t in tickers) if tickers else None
+    tset = {t.strip().casefold() for t in tickers} if tickers else None
     parts = []
     def one(item):
         f, day = item
@@ -1259,12 +1419,13 @@ def _stream_write_market_one(task: Tuple) -> int:
     """Adjust and write one market-layout minute day file: read once, join that day's factors and holder ids by
     ticker, write the same layout (ticker-major, row groups, .idx.parquet sidecar)."""
     path, day, fg, ids, outdir, materialize, tlist = task
-    df = pd.read_parquet(path, filters=[("ticker", "in", tlist)] if tlist else None)
+    tpush = sorted({v for t in tlist for v in (t, t.upper())}) if tlist else None
+    df = pd.read_parquet(path, filters=[("ticker", "in", tpush)] if tpush else None)
     if "T" in df.columns and "ticker" not in df.columns:
         df = df.rename(columns={"T": "ticker"})
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    df["ticker"] = _norm_ticker(df["ticker"])
     if tlist:
-        df = df[df["ticker"].isin(tlist)]
+        df = df[_wanted_mask(df["ticker"], tlist)]
     if df.empty:
         return 0
     for a, b in (("c", "close"), ("v", "volume"), ("o", "open"), ("h", "high"), ("l", "low")):
@@ -1313,7 +1474,7 @@ def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.D
     fg_by_day = {d: g[["ticker", "split_price_factor", "split_volume_factor", "tr_price_factor"]] for d, g in FG.groupby("event_day")}
     id_by_day = {d: g[["ticker", "id"]].drop_duplicates("ticker") for d, g in id_days.groupby("event_day")}
     files = id_days[["path", "event_day"]].drop_duplicates("path").itertuples(index=False)
-    tlist = sorted(set(t.strip().upper() for t in tickers)) if tickers else None
+    tlist = sorted({t.strip() for t in tickers}) if tickers else None
 
     tasks = [(it.path, it.event_day, fg_by_day.get(it.event_day), id_by_day.get(it.event_day), str(outdir), materialize, tlist)
              for it in files]
@@ -1330,7 +1491,8 @@ def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.D
 def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, outdir: Path, *,
                          tickers: Optional[List[str]] = None, start: Optional[str] = None, end: Optional[str] = None,
                          adjust: str = "both", materialize: str = "ohlc", write_workers: int = 4, read_workers: int = 8,
-                         detect_gaps: bool = True, debug_dump: Optional[Path] = None) -> Dict[str, Any]:
+                         detect_gaps: bool = True, debug_dump: Optional[Path] = None,
+                         gap_days: int = RECYCLE_GAP_DAYS) -> Dict[str, Any]:
     """Streaming adjustment of a MARKET-layout minute lake (all tickers per day file) into the same layout.
     `spl`/`div` must already carry holder ids (see _assign_event_ids)."""
     files = _iter_minute_market_files(prices, start, end)
@@ -1339,7 +1501,11 @@ def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div:
     days_df, edges = _scan_day_edges_market(files, tickers=tickers, threads=read_workers)
     if days_df.empty:
         raise SystemExit("No rows for the requested tickers in the selected day files.")
-    id_days = _attach_id_days(days_df, sm)
+    segs = _recycled_segments(days_df["ticker"].to_numpy(), days_df["event_day"], sm, gap_days)
+    if len(segs):
+        spl = _apply_event_segments(spl, segs, ["execution_date"])
+        div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+    id_days = _attach_id_days(days_df, sm, segments=segs)
     if debug_dump is not None:
         debug_dump.mkdir(parents=True, exist_ok=True)
         id_days.to_csv(debug_dump / "_id_days.csv", index=False); edges.to_csv(debug_dump / "_edges.csv", index=False)
@@ -1367,7 +1533,7 @@ def _stream_write_one(task: Tuple) -> int:
     if "ticker" in df.columns or "T" in df.columns:
         if "T" in df.columns and "ticker" not in df.columns:
             df = df.rename(columns={"T":"ticker"})
-        df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+        df["ticker"] = _norm_ticker(df["ticker"])
         df = df[df["ticker"] == tkr]
     else:
         df["ticker"] = tkr
@@ -1451,10 +1617,15 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
 # =============================================================
 
 def _adjust_frame(px: pd.DataFrame, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, adjust: str,
-                  workers: int = 1) -> Tuple[pd.DataFrame, dict, bool]:
+                  workers: int = 1, gap_days: int = RECYCLE_GAP_DAYS) -> Tuple[pd.DataFrame, dict, bool]:
     """Batch adjustment of a price frame: holder ids, split factors, dividend factors, renormalisation.
     Returns (adjusted frame, per-id stats, use_split_base)."""
-    px_id = _attach_id(px, sm)
+    segs = _recycled_segments(_norm_ticker(px["ticker"]).to_numpy(), _trading_day(_to_naive_utc(px["datetime"])),
+                              sm, gap_days)
+    if len(segs):
+        spl = _apply_event_segments(spl, segs, ["execution_date"])
+        div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+    px_id = _attach_id(px, sm, segments=segs)
     px_id["close_split"]  = px_id["close"]
     px_id["volume_split"] = px_id["volume"]
     stats: dict = {}
@@ -1524,23 +1695,23 @@ def _ticker_weights(prices: Path, layout: str, tickers: Optional[List[str]]) -> 
     """Tickers present in the lake (restricted to `tickers` when given) with a cost weight each: files per
     <TICKER>/ directory (ticker layout) or rows per ticker from the parquet ticker column (market layout)."""
     prices = Path(prices)
-    want = set(t.strip().upper() for t in tickers) if tickers else None
+    want = {t.strip().casefold() for t in tickers} if tickers else None
     w: Dict[str, int] = {}
     if layout == "ticker":
         for d in prices.iterdir():
-            t = d.name.strip().upper()
-            if d.is_dir() and (want is None or t in want):
+            t = d.name.strip()
+            if d.is_dir() and (want is None or t.casefold() in want):
                 w[t] = sum(1 for _ in d.rglob("*.parquet"))
         return {t: n for t, n in w.items() if n}
     import pyarrow.compute as pc
     files = [f for f in sorted(prices.rglob("*.parquet")) if not f.name.endswith(".idx.parquet")]
     def one(f: Path) -> Dict[str, int]:
         vc = pc.value_counts(_pq.read_table(f, columns=["ticker"]).column("ticker"))
-        return {str(r["values"]).strip().upper(): int(r["counts"]) for r in vc.to_pylist()}
+        return {str(r["values"]).strip(): int(r["counts"]) for r in vc.to_pylist()}
     with ThreadPoolExecutor(max_workers=8) as ex:
         for part in ex.map(one, files):
             for t, n in part.items():
-                if want is None or t in want:
+                if want is None or t.casefold() in want:
                     w[t] = w.get(t, 0) + n
     return w
 
@@ -1554,7 +1725,8 @@ def _shard_worker(p: Dict[str, Any]) -> Dict[str, Any]:
         px = pd.DataFrame()
     if px.empty:                                   # e.g. a --start/--end window with none of this shard's rows
         return {"shard": p["shard"], "rows": 0, "summary": []}
-    px_tr, stats, use_split_base = _adjust_frame(px, p["sm"], p["spl"], p["div"], p["adjust"], workers=1)
+    px_tr, stats, use_split_base = _adjust_frame(px, p["sm"], p["spl"], p["div"], p["adjust"], workers=1,
+                                                 gap_days=p.get("gap_days", RECYCLE_GAP_DAYS))
     _write_partitioned_lake(px_tr, Path(p["outdir"]), p["granularity"], p["write_threads"], p["materialize"], layout=p["layout"])
     return {"shard": p["shard"], "rows": int(len(px_tr)), "summary": _summary_rows(stats, px_tr, p["adjust"], use_split_base)}
 
@@ -1603,6 +1775,7 @@ def _run_batch_sharded(args, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFr
         payloads.append({"shard": k, "tickers": tk, "prices": str(args.prices), "start": args.start, "end": args.end,
                          "sm": sm, "spl": _slice(spl, tset), "div": _slice(div, tset),
                          "adjust": args.adjust, "materialize": args.materialize, "granularity": args.granularity,
+                         "gap_days": args.recycle_gap_days,
                          "layout": layout, "write_threads": write_threads,
                          "outdir": str(parts_root / f"shard{k:03d}") if layout == "market" else str(args.outdir)})
     print(f"Sharded build: {len(weights)} tickers in {len(shards)} shards ({layout} layout, {len(shards)} processes)")
@@ -1664,6 +1837,11 @@ def main():
     ap.add_argument("--write-workers", type=int, default=_default_write_workers(),
                     help="Minute streaming: processes writing day files. Day batch: writer threads, shared out over "
                          "the --workers processes. Set 1 to disable.")
+    ap.add_argument("--recycle-gap-days", type=int, default=RECYCLE_GAP_DAYS,
+                    help="Split a ticker's history where it stopped trading this many days or more, and give the "
+                         "earlier segments their own holder id, so a recycled symbol's old bars are not credited "
+                         "to today's company (ARM traded from 2003; Arm Holdings listed in 2023). Applies only to "
+                         "tickers whose security-master start is unconfirmed. 0 disables.")
     ap.add_argument("--adjust", choices=["splits", "dividends", "both"], default="both",
                     help="Which adjustments to apply (default: both)")
     ap.add_argument("--materialize", choices=["minimal","close","ohlc"], default="minimal",
@@ -1695,9 +1873,9 @@ def main():
     tickers = None
     if args.tickers is not None:
         try:
-            tickers = sorted([t.strip().upper() for t in json.loads(Path(args.tickers).read_text())])
+            tickers = sorted({t.strip() for t in json.loads(Path(args.tickers).read_text())})
         except Exception:
-            tickers = [t.strip().upper() for t in Path(args.tickers).read_text().splitlines() if t.strip()]
+            tickers = sorted({t.strip() for t in Path(args.tickers).read_text().splitlines() if t.strip()})
 
     # Load reference tables
     sm  = pd.read_parquet(args.refdir / "security_master.parquet")
@@ -1715,7 +1893,7 @@ def main():
             info = adjust_minute_market(args.prices, sm, spl, div, args.outdir, tickers=tickers, start=args.start, end=args.end,
                                         adjust=args.adjust, materialize=args.materialize, write_workers=args.write_workers,
                                         read_workers=args.stream_read_workers, detect_gaps=bool(args.detect_split_gaps),
-                                        debug_dump=args.debug_dump)
+                                        debug_dump=args.debug_dump, gap_days=args.recycle_gap_days)
             print(f"\nDone (streaming, market layout): {info['files']} day files, {info['tickers']} tickers, "
                   f"{info['ticker_days']} ticker-days -> {args.outdir.resolve()}")
             _copy_manifest(args.prices, args.outdir, args.manifest_src, skip=args.no_copy_manifest)
@@ -1728,7 +1906,11 @@ def main():
         if not files:
             raise SystemExit("No minute day-files found under --prices for the selection.")
         days_df = pd.DataFrame(files, columns=["ticker","path","event_day"])
-        id_days = _attach_id_days(days_df, sm)
+        segs = _recycled_segments(days_df["ticker"].to_numpy(), days_df["event_day"], sm, args.recycle_gap_days)
+        if len(segs):
+            spl = _apply_event_segments(spl, segs, ["execution_date"])
+            div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+        id_days = _attach_id_days(days_df, sm, segments=segs)
 
         if args.debug_dump is not None:
             args.debug_dump.mkdir(parents=True, exist_ok=True)
@@ -1771,7 +1953,8 @@ def main():
         csv_path = _run_batch_sharded(args, sm, spl, div, layout, tickers)
     else:
         px = _read_prices(args.prices, tickers=tickers, start=args.start, end=args.end)
-        px_tr, stats, use_split_base = _adjust_frame(px, sm, spl, div, args.adjust, workers=1)
+        px_tr, stats, use_split_base = _adjust_frame(px, sm, spl, div, args.adjust, workers=1,
+                                                     gap_days=args.recycle_gap_days)
         _write_partitioned_lake(px_tr, args.outdir, args.granularity, args.write_workers, args.materialize, layout=layout)
         csv_path = _write_summary_csv(stats, args.outdir, px_tr, args.adjust, use_split_base)
 

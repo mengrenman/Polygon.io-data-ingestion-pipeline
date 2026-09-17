@@ -47,7 +47,10 @@ class TestHolderId:
     def test_figi_then_cik_then_ticker(self):
         assert fb._holder_id("BBG1", "123", "x") == "BBG1"
         assert fb._holder_id(None, "0000040730", "GM") == OLD
-        assert fb._holder_id(None, None, " GM ") == "NOFIGI__GM"
+        assert fb._holder_id(None, None, "gm") == "NOFIGI__gm"
+        assert fb._holder_id(None, None, " GM ") == "NOFIGI__GM"      # stripped, not folded
+        # case carries share class in Polygon's symbology, so it must survive into the id
+        assert fb._holder_id(None, None, "AAp") != fb._holder_id(None, None, "AAP")
         assert fb._holder_id(float("nan"), float("nan"), "GM") == "NOFIGI__GM"
 
     def test_fallback_id_keeps_letter_case_so_two_securities_stay_apart(self):

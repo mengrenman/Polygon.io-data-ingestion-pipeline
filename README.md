@@ -368,6 +368,36 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   volume in 167 of the universe's 262 months. Exclude them (`--exclude-tickers` on the universe build)
   before any return study.
 
+- **Recycled symbols — fixed.** A symbol reassigned to a new company used to keep one holder `id` for
+  its whole history, because no ticker in the security master has a *confirmed* start date (the derive
+  runs without `--probe-dates`). So `ARM` bars from 2003 were credited to Arm Holdings, which listed in
+  2023, and that company's splits were applied to them; `COIN`, `APP`, `ANET`, `AXON` and `GM` the same.
+  The adjuster now cuts a ticker's history wherever it stopped trading for 60 days or more and gives
+  each earlier segment its own id, `NOFIGI__<TICKER>#SEG<n>`, re-keying corporate actions onto those
+  segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "before the current owner,
+  identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
+  cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
+- **Security type is missing for older names, and the gap tracks survival.** Filtering on a type to drop
+  warrants and preferreds also drops companies that were acquired or went bankrupt, hardest early:
+  liquid name-days (close ≥ $5, dollar volume ≥ $1 M) in June with **no usable type** run 22.8% in 2004,
+  15.6% 2008, 9.8% 2012, 4.1% 2016, 1.8% 2020, 0.0% 2024. Two causes. Join on `ticker`, never on the
+  adjusted lake's `id` — an id join misses 38.8% of 2004 because `NOFIGI__` and `#SEG` ids have no master
+  row by design. And a matched row often carries a **null** type: 4,554 of 29,078 master rows, **100% of
+  them delisted**, so it is a miss that looks like a hit. Do not substitute `market_tickers.type`, null
+  for 18.4% of rows and worse for 2004. Closing it needs the delisted-ticker endpoints and a paid plan.
+  The 517-ticker collection is unaffected: all 517 carry a type.
+- **Bad ticks survive in the source data.** Polygon's own files carry occasional bad prints and a daily
+  aggregate inherits them: `SIRI` on 2007-06-13 closes at 25.55 against a true range of 2.75–2.80,
+  from one 22.29 print at 15:50; `SMS` on 2008-03-20 has a $0.01 low against a $26 stock. Not fixable in
+  the pipeline. Screen on a sane high/low ratio and a minimum price before computing returns.
+- **Timezone differs between lakes.** Adjusted lakes store `datetime` tz-naive **UTC**; unadjusted lakes
+  store tz-aware **US/Eastern**. `load_series` reconciles it; pass `source_tz="UTC"` to
+  `load_polygonio_lake` on an adjusted lake. Joining the two without converting misaligns every row.
+- **The 16:00 minute bar is not the official close.** The daily `open` equals the 09:30 minute bar's open
+  for every ticker, but the daily `close` is the official closing price while the 16:00 minute bar's close
+  is only the last print inside that minute — they agree for 52.7% of the market, median gap 13 bp. Use
+  the daily file for the official close, and never mix a daily price with a minute price in one ratio.
+
 Notebook 03 loads and plots:
 - **Unadjusted `close`**
 - **Split-adjusted `close_sa`**

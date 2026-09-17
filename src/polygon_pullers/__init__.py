@@ -128,8 +128,11 @@ def _write_failures(path: str | Path, failed: List[tuple], *, what: str) -> None
 
 def holder_id(figi, cik, ticker) -> str:
     """
-    Stable id for the *company* behind a ticker: composite FIGI, else 'CIK__<cik>', else 'NOFIGI__<TICKER>'.
+    Stable id for the *company* behind a ticker: composite FIGI, else 'CIK__<cik>', else 'NOFIGI__<ticker>'.
     Polygon returns no FIGI for some delisted holders (the pre-2009 General Motors Corp has only a CIK).
+
+    The ticker keeps its source spelling: Polygon encodes share class in letter case, so upper-casing
+    would give Alcoa's preferred (`AAp`) and Advance Auto Parts (`AAP`) the same synthetic id.
     Must agree with legacy_scripts/factor_builder._holder_id.
     """
     if isinstance(figi, str) and figi.strip():
