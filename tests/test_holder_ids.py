@@ -47,8 +47,13 @@ class TestHolderId:
     def test_figi_then_cik_then_ticker(self):
         assert fb._holder_id("BBG1", "123", "x") == "BBG1"
         assert fb._holder_id(None, "0000040730", "GM") == OLD
-        assert fb._holder_id(None, None, "gm") == "NOFIGI__GM"
+        assert fb._holder_id(None, None, " GM ") == "NOFIGI__GM"
         assert fb._holder_id(float("nan"), float("nan"), "GM") == "NOFIGI__GM"
+
+    def test_fallback_id_keeps_letter_case_so_two_securities_stay_apart(self):
+        # Polygon writes the share class in the case: AAp is Alcoa's $3.75 preferred, AAP is Advance
+        # Auto Parts. Folding case here gave both one id, and with it one company's splits and dividends.
+        assert fb._holder_id(None, None, "AAp") != fb._holder_id(None, None, "AAP")
 
 
 class TestAssignHolderIds:

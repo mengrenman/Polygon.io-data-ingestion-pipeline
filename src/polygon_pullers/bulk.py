@@ -26,7 +26,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequ
 import numpy as np
 import pandas as pd
 
-from . import SM_COLUMNS, _RATE_LIMIT_MIN_SLEEP_SEC, _dedupe_holders, _throttle, _to_upper_list, holder_id
+from . import SM_COLUMNS, _RATE_LIMIT_MIN_SLEEP_SEC, _clean_list, _dedupe_holders, _throttle, holder_id
+from polygon_ingest.tickers import resolve
 
 BASE = "https://api.polygon.io"
 Fetch = Callable[[str, Optional[dict]], dict]
@@ -133,7 +134,10 @@ def pull_market_tickers(out_parquet: str | Path, fetch: Fetch, *, market: str = 
         for page in iter_results("/v3/reference/tickers", params, fetch, label=f"tickers active={active}"):
             rows.extend({c: r.get(c) for c in TICKER_COLS} for r in page)
     df = pd.DataFrame(rows, columns=TICKER_COLS)
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    # Polygon spells the share class in the letter case and this endpoint is case-sensitive, so `AAp`
+    # (Alcoa $3.75 preferred) and `AAP` (Advance Auto Parts) are separate rows. Upper-casing collapsed
+    # 125 such pairs and left the lake unable to tell the two securities apart.
+    df["ticker"] = df["ticker"].astype(str).str.strip()
     for c in ("delisted_utc", "last_updated_utc"):
         df[c] = _utc_naive(df[c])
     df["holder_id"] = [holder_id(f, k, t) for f, k, t in zip(df["composite_figi"], df["cik"], df["ticker"])]
@@ -197,7 +201,7 @@ def _pull_paged_table(path: str, params: Dict[str, Any], out_parquet: Path, fetc
 
 def _normalize_splits(new: pd.DataFrame) -> pd.DataFrame:
     new = new.copy()
-    new["ticker"] = new["ticker"].astype(str).str.strip().str.upper()
+    new["ticker"] = new["ticker"].astype(str).str.strip()
     new["execution_date"] = pd.to_datetime(new["execution_date"], errors="coerce")
     sf = pd.to_numeric(new["split_from"], errors="coerce")
     st = pd.to_numeric(new["split_to"], errors="coerce")
@@ -207,7 +211,7 @@ def _normalize_splits(new: pd.DataFrame) -> pd.DataFrame:
 
 def _normalize_dividends(new: pd.DataFrame) -> pd.DataFrame:
     new = new.copy()
-    new["ticker"] = new["ticker"].astype(str).str.strip().str.upper()
+    new["ticker"] = new["ticker"].astype(str).str.strip()
     for c in ("ex_dividend_date", "pay_date", "record_date", "declaration_date"):
         new[c] = pd.to_datetime(new[c], errors="coerce")
     new["cash_amount"] = pd.to_numeric(new["cash_amount"], errors="coerce")
@@ -293,10 +297,13 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     """
     market_dir, outdir = Path(market_dir), Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    uni = _to_upper_list(tickers)
-    uset = set(uni)
-
     tk = pd.read_parquet(market_dir / MARKET_TICKERS)
+    # The collection list is matched against the tickers table exactly, then case-insensitively where
+    # that is unambiguous, so a list typed in capitals still resolves without `AAP` pulling in `AAp`.
+    mapping, _, ambiguous_case = resolve(_clean_list(tickers), tk["ticker"].astype(str))
+    uni = list(dict.fromkeys(mapping.values()))
+    uset = set(uni)
+    unresolved = [t for t in _clean_list(tickers) if t not in mapping]
     src = tk[tk["ticker"].isin(uset)].copy()
     active = src["active"].fillna(False).astype(bool)
     # A delisted record with neither FIGI nor CIK carries no evidence of being a *different* company (many are
@@ -330,7 +337,7 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     sm["holder_source"] = sm["holder_source"].replace({"current": "market:active"})
     sm.to_parquet(outdir / "security_master.parquet", index=False)
 
-    missing = sorted(uset - set(tk["ticker"]))
+    missing = sorted(set(unresolved))
     (outdir / "_missing_tickers.txt").write_text("\n".join(missing) + ("\n" if missing else ""))
     amb_path = outdir / "_ambiguous_delisted_records.csv"
     if len(ambiguous):
@@ -352,4 +359,5 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     n_multi = int((sm.groupby("ticker")["holder_id"].nunique() > 1).sum()) if len(sm) else 0
     return {"tickers": len(uni), "security_master_rows": len(sm), "multi_holder_tickers": n_multi,
             "missing": missing, "ambiguous_delisted": sorted(ambiguous["ticker"].unique().tolist()),
+            "ambiguous_case": {k: v for k, v in sorted(ambiguous_case.items())},
             "splits": len(spl), "dividends": len(div)}

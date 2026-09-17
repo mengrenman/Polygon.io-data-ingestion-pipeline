@@ -48,8 +48,14 @@ def _client(api_key: str) -> RESTClient:
     return RESTClient(api_key)
 
 
-def _to_upper_list(v: Iterable[str]) -> List[str]:
-    return [str(x).strip().upper() for x in v if str(x).strip()]
+def _clean_list(v: Iterable[str]) -> List[str]:
+    """Symbols with surrounding whitespace removed, spelled exactly as given.
+
+    Polygon writes the share class in the letter case (`AAp` is the Alcoa $3.75 preferred, a different
+    security from `AAP`) and its reference endpoints are case-sensitive: `?ticker=AAP&active=false`
+    returns nothing where `?ticker=AAp` returns Alcoa. Upper-casing here merged the two.
+    """
+    return [str(x).strip() for x in v if str(x).strip()]
 
 
 # Optional pacing between REST calls for rate-limited plans (Polygon Basic allows 5 requests/minute
@@ -132,7 +138,7 @@ def holder_id(figi, cik, ticker) -> str:
         c = str(cik).strip()
         if c and c.lower() not in ("nan", "none", "<na>"):
             return "CIK__" + c
-    return "NOFIGI__" + str(ticker).strip().upper()
+    return "NOFIGI__" + str(ticker).strip()
 
 
 def _ts(x) -> pd.Timestamp:
@@ -158,7 +164,7 @@ def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, 
     figi = getattr(d, "composite_figi", None)
     cik = getattr(d, "cik", None)
     return {
-        "ticker": str(getattr(d, "ticker", None) or ticker).strip().upper(),
+        "ticker": str(getattr(d, "ticker", None) or ticker).strip(),
         "holder_id": holder_id(figi, cik, ticker),
         "holder_source": source,
         "name": getattr(d, "name", None),
@@ -236,7 +242,7 @@ def probe_previous_holders(
         cli = _client(load_api_key(api_key, api_key_file))
     rows: List[Dict[str, Any]] = []
     probe_dates = [str(x) for x in probe_dates]
-    for t in _to_upper_list(tickers):
+    for t in _clean_list(tickers):
         for pdate in probe_dates:
             try:
                 d = _retrying_call(cli.get_ticker_details, t, date=pdate)
@@ -281,7 +287,7 @@ def pull_security_master(
 
     rows: List[Dict[str, Any]] = []
     missing: List[str] = []
-    tlist = _to_upper_list(tickers)
+    tlist = _clean_list(tickers)
 
     for t in tqdm(tlist, desc="security master"):
         try:
@@ -329,7 +335,7 @@ def pull_dividends(
 
     rows: List[Dict[str, Any]] = []
     failed: List[tuple] = []
-    for t in tqdm(_to_upper_list(tickers), desc="dividends"):
+    for t in tqdm(_clean_list(tickers), desc="dividends"):
         try:
             it = _retrying_call(cli.list_dividends, ticker=t, order="asc", sort="ex_dividend_date", limit=1000)
             for d in it:
@@ -378,7 +384,7 @@ def pull_splits(
 
     rows: List[Dict[str, Any]] = []
     failed: List[tuple] = []
-    for t in tqdm(_to_upper_list(tickers), desc="splits"):
+    for t in tqdm(_clean_list(tickers), desc="splits"):
         try:
             it = _retrying_call(cli.list_splits, ticker=t, order="asc", sort="execution_date", limit=1000)
             for s in it:
@@ -446,7 +452,7 @@ def pull_ticker_events(
 
     rows: List[Dict[str, Any]] = []
     failed: List[tuple] = []
-    for t in tqdm(_to_upper_list(tickers), desc="ticker events"):
+    for t in tqdm(_clean_list(tickers), desc="ticker events"):
         try:
             r = _retrying_call(cli.get_ticker_events, t)
         except BadResponse as e:
@@ -466,7 +472,7 @@ def pull_ticker_events(
                 "composite_figi": figi, "cik": cik, "name": name,
                 "event_type": _event_field(e, "type"),
                 "date": _ts(_event_field(e, "date")),
-                "ticker": str(new_t).strip().upper() if new_t else None,
+                "ticker": str(new_t).strip() if new_t else None,
             })
 
     out_parquet = Path(out_parquet)
@@ -516,7 +522,7 @@ def holders_from_history(events: pd.DataFrame, history: pd.DataFrame) -> pd.Data
         m = meta.loc[r.holder_id] if (len(meta) and r.holder_id in meta.index) else None
         row = {c: None for c in SM_COLUMNS}
         row.update({
-            "ticker": str(r.ticker).strip().upper(), "holder_id": r.holder_id, "holder_source": "events",
+            "ticker": str(r.ticker).strip(), "holder_id": r.holder_id, "holder_source": "events",
             "name": m["name"] if m is not None else None,
             "composite_figi": m["composite_figi"] if m is not None else None,
             "cik": m["cik"] if m is not None else None,
