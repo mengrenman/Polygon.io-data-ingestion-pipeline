@@ -22,14 +22,21 @@ from polygon_pullers import (
     load_api_key,
 )
 from polygon_pullers.bulk import make_fetch, pull_market_refdata, derive_collection_refdata
+from polygon_ingest.tickers import resolve
 
 
 # -----------------------------
 # Normalization & preflight
 # -----------------------------
 def normalize_guess(tk: str) -> str:
-    """Safe normalization: uppercase; replace / - ^ and spaces with '.'."""
-    t = tk.strip().upper()
+    """Safe normalization: replace / - ^ and spaces with '.'. Letter case is left alone.
+
+    Polygon encodes the share class in the case (`AAp` is Alcoa's $3.75 preferred, `AAP` is Advance
+    Auto Parts) and its reference endpoints are case-sensitive, so upper-casing a symbol here asked
+    for a different security. Callers that type a list in the wrong case are covered by the
+    case-insensitive fallback in `polygon_ingest.tickers.resolve`.
+    """
+    t = tk.strip()
     # Replace common separators with dot (Polygon uses dot for classes)
     for ch in ("/", "-", "^", " "):
         t = t.replace(ch, ".")
@@ -58,7 +65,7 @@ def candidate_variants(original: str) -> List[str]:
         variants.append(dot.replace(".", "-"))
         variants.append(dot.replace(".", "/"))
     # Original as last fallback
-    variants.append(original.strip().upper())
+    variants.append(original.strip())
     # De-dup, preserve order
     seen, uniq = set(), []
     for v in variants:
@@ -175,15 +182,24 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
     print(f"  tickers: {len(tk)} rows ({int(tk['active'].fillna(False).astype(bool).sum())} active) | "
           f"splits: {len(tables['splits'])} rows | dividends: {len(tables['dividends'])} rows")
 
-    # Universe normalization: uppercase + the same separator guess as per-ticker mode, checked against the table
-    normalized = {tk_: (tk_.strip().upper() if args.no_normalize else normalize_guess(tk_)) for tk_ in raw_tickers}
-    known = set(tk["ticker"])
+    # Universe normalization: the same separator guess as per-ticker mode, checked against the table.
+    # Each candidate spelling is matched exactly first, then case-insensitively where only one symbol
+    # could have been meant - so a list typed in capitals resolves without `AAP` also claiming `AAp`.
+    normalized = {tk_: (tk_.strip() if args.no_normalize else normalize_guess(tk_)) for tk_ in raw_tickers}
+    known = tk["ticker"].astype(str).tolist()
     resolved = {}
     for orig, guess in normalized.items():
-        for cand in ([guess] + [c for c in candidate_variants(orig) if c != guess]):
-            if cand in known:
-                resolved[orig] = cand
+        cands = [guess] + [c for c in candidate_variants(orig) if c != guess]
+        mapping, _, ambiguous = resolve(cands, known)
+        for cand in cands:
+            if cand in mapping:
+                resolved[orig] = mapping[cand]
                 break
+        else:
+            if ambiguous:
+                first = sorted(ambiguous.items())[0]
+                print(f"  [warn] {orig!r} could mean {first[1]} - different securities; "
+                      f"put the exact spelling in the ticker list")
     pd.DataFrame([{"original": k, "normalized_guess": normalized[k], "resolved": resolved.get(k, ""),
                    "status": "OK" if k in resolved else "MISSING", "tried_variants": "", "message": ""}
                   for k in raw_tickers]).to_csv(outdir / "_ticker_normalization_map.csv", index=False)
@@ -204,6 +220,10 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
           f"splits: {summary['splits']} | dividends: {summary['dividends']} | missing tickers: {len(summary['missing'])}")
     if summary["missing"]:
         print(f"  missing: {outdir / '_missing_tickers.txt'} -> {summary['missing'][:10]}")
+    if summary.get("ambiguous_case"):
+        print(f"  {len(summary['ambiguous_case'])} list entr(ies) match more than one spelling and were skipped rather than "
+              f"guessed (Polygon's letter case is the share class): "
+              f"{', '.join(f'{k} -> {v}' for k, v in list(summary['ambiguous_case'].items())[:5])}")
     if summary["ambiguous_delisted"]:
         print(f"  {len(summary['ambiguous_delisted'])} ticker(s) have delisted records without FIGI/CIK (ignored; see "
               f"{outdir / '_ambiguous_delisted_records.csv'}). If one is a different company, add a --probe-dates "
@@ -249,7 +269,7 @@ def main():
                          "dates, so a recycled ticker's previous company becomes its own holder/id "
                          "(old GM until 2009 vs new GM from 2010-11-18). +1 request per ticker per date.")
     ap.add_argument("--no-normalize", action="store_true",
-                    help="Disable normalization (still uppercases).")
+                    help="Disable separator normalization; use the symbols exactly as given.")
     ap.add_argument("--no-preflight", action="store_true",
                     help="Disable API validation pass; use normalized guesses directly.")
     ap.add_argument("--bulk", action="store_true",
@@ -290,10 +310,10 @@ def main():
     # Preflight normalize + validate
     if args.no_normalize and args.no_preflight:
         # Barebones: only uppercase originals
-        resolved_map = {tk: tk.strip().upper() for tk in raw_tickers}
+        resolved_map = {tk: tk.strip() for tk in raw_tickers}
         pd.DataFrame([{
-            "original": k, "normalized_guess": k.strip().upper(), "resolved": k.strip().upper(),
-            "status": "ASSUMED", "tried_variants": str([k.strip().upper()]), "message": ""
+            "original": k, "normalized_guess": k.strip(), "resolved": k.strip(),
+            "status": "ASSUMED", "tried_variants": str([k.strip()]), "message": ""
         } for k in raw_tickers]).to_csv(outdir / "_ticker_normalization_map.csv", index=False)
         (outdir / "_missing_tickers.txt").write_text("")
     else:

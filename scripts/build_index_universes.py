@@ -24,6 +24,9 @@ def parse_tickers_from_tables(tables, candidates=("Symbol","Ticker","Ticker symb
     for tbl in tables:
         for c in candidates:
             if c in tbl.columns:
+                # index constituents are common stock, which Polygon writes in capitals, so upper-casing
+                # a Wikipedia cell is safe here - unlike on flat-file symbols, where a lowercase letter
+                # is the share class (see polygon_ingest.tickers)
                 s = tbl[c].astype(str).str.strip().str.upper()
                 s = s.str.split().str[0]            # some cells carry a trailing footnote
                 s = s[s.str.len() > 0]

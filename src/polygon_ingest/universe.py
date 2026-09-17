@@ -12,8 +12,8 @@ Method
 1. Trading-history segments: a ticker's rows are split at gaps of >= `gap_days`; a gap that long means the
    symbol was reused by another company (BSC: Bear Stearns until 2008, an ETN since). The tickers table's
    record describes the CURRENT holder, so its type applies to the LAST segment only; earlier segments are
-   "untyped" and judged by a symbol heuristic (dot-suffix classes .U/.WS/.W/.R/.RT/.P* and NASDAQ 5th-letter
-   W/U/R are derivatives, everything else is treated as a share).
+   "untyped" and judged by a symbol heuristic (a lowercase class letter as Polygon writes it, dot-suffix
+   classes .U/.WS/.W/.R/.RT/.P* and NASDAQ 5th-letter W/U/R are derivatives, everything else is a share).
 2. Liquidity: trailing average dollar volume (close x volume) over `lookback` trading days, per ticker,
    from a dense (days x tickers) matrix; a ticker must have traded within the last `max_stale` trading days
    and have >= `min_days` observations in the window (excludes brand-new listings, a standard bias control).
@@ -34,6 +34,8 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+
+from .tickers import resolve
 
 DERIVATIVE_SUFFIX = re.compile(r"\.(U|UN|WS|W|WT|R|RT|RTS|P[A-Z]?|PR[A-Z]?)$")
 NASDAQ_5TH_LETTER_DERIVATIVE = re.compile(r"^[A-Z]{4}[WUR]$")
@@ -72,7 +74,7 @@ def load_market_day_lake(root: str | Path, start: Optional[str] = None, end: Opt
         df = df[df["date"] >= s]
     if e is not None:
         df = df[df["date"] <= e]
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    df["ticker"] = df["ticker"].astype(str).str.strip()   # the case is the share class; see polygon_ingest.tickers
     return df.reset_index(drop=True)
 
 
@@ -91,8 +93,16 @@ def trading_segments(df: pd.DataFrame, gap_days: int = GAP_DAYS_DEFAULT) -> pd.D
 
 
 def looks_like_derivative(ticker: str) -> bool:
-    """Symbol heuristic for records without a security type: preferreds, warrants, units, rights."""
-    t = str(ticker).upper()
+    """Symbol heuristic for records without a security type: preferreds, warrants, units, rights.
+
+    Polygon writes the class code in LOWER case - `AAp` is Alcoa's $3.75 preferred, `AANw` a warrant,
+    `AAGpT` preferred series T - so a lowercase letter is itself the marker, and it is the one that
+    catches most of them: 4,041 of the flat files' 33,833 symbols carry one. The dot-suffix and
+    NASDAQ fifth-letter forms cover the spellings that encode the class without case.
+    """
+    t = str(ticker).strip()
+    if any(c.islower() for c in t):
+        return True
     return bool(DERIVATIVE_SUFFIX.search(t)) or bool(NASDAQ_5TH_LETTER_DERIVATIVE.match(t))
 
 
@@ -122,7 +132,7 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
     tk = None
     if tickers_table is not None and len(tickers_table):
         tk = tickers_table.copy()
-        tk["ticker"] = tk["ticker"].astype(str).str.strip().str.upper()
+        tk["ticker"] = tk["ticker"].astype(str).str.strip()
         act = tk["active"].fillna(False).astype(bool) if "active" in tk.columns else pd.Series(True, index=tk.index)
         # prefer the active record; among delisted, the most recently delisted
         order = tk.assign(_a=act.astype(int), _d=pd.to_datetime(tk["delisted_utc"], errors="coerce") if "delisted_utc" in tk.columns else pd.NaT)
@@ -151,7 +161,9 @@ def classify_segments(segments: pd.DataFrame, tickers_table: Optional[pd.DataFra
         untyped_ok = (~typed) & (~deriv) & (~current_is_fund)
     else:
         untyped_ok = pd.Series(False, index=seg.index)
-    excl = seg["ticker"].isin({str(t).upper() for t in (exclude_tickers or [])})
+    # a hand-written exclusion list is matched exactly, then case-insensitively where that is unambiguous
+    excl_map, _, _ = resolve(exclude_tickers or [], seg["ticker"].unique())
+    excl = seg["ticker"].isin(set(excl_map.values()))
     eligible = (is_share | untyped_ok) & ~excl
     if exchanges:
         exch_ok = seg["exchange"].isna() | seg["exchange"].isin(list(exchanges))
@@ -260,12 +272,12 @@ def summarize(membership: pd.DataFrame, tickers_table: Optional[pd.DataFrame], s
     out: Dict = {"rebalances": int(mem["rebalance_date"].nunique()), "unique_tickers": int(mem["ticker"].nunique()),
                  "members_per_year": {int(k): int(v) for k, v in per_year.items()}}
     if tickers_table is not None and len(tickers_table):
-        tk = tickers_table.copy(); tk["ticker"] = tk["ticker"].astype(str).str.upper()
+        tk = tickers_table.copy(); tk["ticker"] = tk["ticker"].astype(str).str.strip()
         active_share = set(tk.loc[tk["active"].fillna(False).astype(bool) & tk["type"].isin(["CS"]), "ticker"])
         gone = mem.groupby("year")["ticker"].apply(lambda s: 1 - len(set(s) & active_share) / len(set(s)))
         out["share_of_members_not_an_active_common_stock_today"] = {int(k): round(float(v), 3) for k, v in gone.items()}
     if static_list is not None:
-        sl = {str(t).upper() for t in static_list}
+        sl = set(resolve(static_list, mem["ticker"].unique())[0].values())
         miss = mem.groupby("year")["ticker"].apply(lambda s: 1 - len(set(s) & sl) / len(set(s)))
         out["share_of_members_missing_from_static_list"] = {int(k): round(float(v), 3) for k, v in miss.items()}
     # earlier segments of recycled symbols admitted without a type: review these (a fund that came back to its

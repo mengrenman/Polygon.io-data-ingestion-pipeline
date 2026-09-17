@@ -1,6 +1,6 @@
 # Polygon.io Data Lake Builder
 
-A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 100 regression tests, several of them known-answer checks against real data.
+A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 131 regression tests, several of them known-answer checks against real data.
 
 <p align="center">
 <img src="figures/adjust.png" alt="NVDA day bars: unadjusted close vs split-adjusted close vs total-return close, base 100" width="1000">
@@ -12,7 +12,7 @@ A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (pe
 
 ## Features
 
-- **Unadjusted** lakes (minute/day) partitioned on the ET trading date, in a per-ticker or a whole-market (`--layout market`) layout, with bounded memory.
+- **Unadjusted** lakes (minute/day) partitioned on the ET trading date, in a per-ticker or a whole-market (`--layout market`) layout, with bounded memory. Symbols are stored as Polygon spells them, because the letter case *is* the share class (`AAp` is Alcoa's preferred, not `AAP`).
 - **Refdata** in a few hundred requests for any universe size: market-wide tickers (active + delisted), splits and dividends tables, refreshed incrementally; collection files derived by filtering. **Holder ids** (FIGI → CIK → ticker) keep a recycled ticker's previous company separate.
 - **Adjusted** lakes (split-adjusted OHLC/volume, VWAP when the source carries it, + total-return) in either layout: a batch path for day lakes, a streaming path for minute lakes.
 - Helper scripts to build **ticker lists** (SPX, NDX, combined) or extract from flatfiles, and a **point-in-time universe** builder (membership per rebalance date from trailing dollar volume; survivorship-free).
@@ -78,6 +78,7 @@ repo_polygonio/
 │  │  ├─ ingest.py                       # CSV.GZ → Parquet lake (minute/day)
 │  │  ├─ cli.py                          # `poly bars` CLI entry (ingestion)
 │  │  ├─ lake_io.py                      # schema-safe readers for notebooks/QA
+│  │  ├─ tickers.py                      # ticker spelling: the case is the share class; matching rules
 │  │  └─ universe.py                     # point-in-time universe: segments, eligibility, membership
 │  │ 
 │  └─ polygon_pullers/
@@ -126,7 +127,7 @@ repo_polygonio/
 │  ├─ 04_lake_inventory_and_quality.ipynb    # EDA: coverage, calendar, data-quality findings
 │  ├─ 05_universe_and_survivorship.ipynb     # EDA: point-in-time universe, survivorship priced
 │  └─ 06_minute_lake_access.ipynb            # EDA: reading 7 bn rows, sidecars, intraday profile
-├─ tests/                                # pytest, 112 tests: adjustment math, holder ids, layouts, pullers, universe
+├─ tests/                                # pytest, 131 tests: adjustment math, holder ids, ticker case, layouts, pullers, universe
 └─ figures/adjust.png                    # README QA figure, built from real refdata
 ```
 
@@ -341,18 +342,61 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
 | `05_universe_and_survivorship` | The point-in-time universe: liquidity bar, turnover, and survivorship bias measured in return terms. |
 | `06_minute_lake_access` | How to read 7 billion minute rows: layouts, `.idx.parquet` sidecars, measured read costs, intraday volume profile. |
 
-**Known data issues.** Found by the notebooks and by a read-only audit of the published files; each line says whether it is fixed.
+**Known data issues these surfaced:**
 
-| Issue | Status |
-|---|---|
-| **Recycled symbols inherited today's company.** A symbol reassigned to a new company kept one holder `id` for its whole history, so `ARM` bars from 2003 were credited to Arm Holdings (listed 2023), and the new owner's splits were applied to the old owner's bars. | **Fixed.** The adjuster now cuts each ticker's history where it stopped trading for 60 days or more and gives the earlier segments their own id (`NOFIGI__<TICKER>#SEG<n>`), and re-keys corporate actions onto those segments. Only tickers with an unconfirmed security-master start are touched. See `--recycle-gap-days`. |
-| **Ticker casing merged different securities.** Polygon encodes share class in letter case (`AAp` is Alcoa's preferred, distinct from `AAP`; `AANw` is a warrant) and the pipeline upper-cased, so about 90 symbols carried two securities' bars over 29,258 ticker-days. | **Fixed** throughout ingest and the adjuster; the day lakes have been re-ingested and rebuilt and now carry 4,041 mixed-case symbols. **The minute lakes have not been re-ingested yet** and still carry the defect. |
-| **28 duplicate ticker-days remain, all on 2019-08-13.** Polygon's flat file for 2019-08-12 contains a bar stamped 2019-08-13, so two source files carry a bar for the same trading date. Affects thinly-traded exchange-traded products. | **Not fixable in the pipeline** — the ET partitioning is correct and the source is wrong. De-duplicate on `(ticker, date)` keeping the higher-volume row; the other row has near-zero volume. |
-| **Exchange test symbols.** `ZVZZT`, `ZEXIT` and 117 others quote at synthetic prices (up to $200,000, and $889 M of notional in one day) and have no reference row, so they ranked first by dollar volume in 167 of the universe's 262 months. | **Fixed.** Listed in `data/ticker_lists/exchange_test_symbols.json` and excluded from the point-in-time universe build. Exclude them from any cross-sectional study. |
-| **Bad ticks in the source data.** Polygon's own files carry occasional bad prints, and a daily aggregate inherits them: `SIRI` on 2007-06-13 has close 25.55 against a true range of 2.75 to 2.80, because of one 22.29 print at 15:50. `SMS` 2008-03-20 has a $0.01 low against a $26 stock. | **Not fixable in the pipeline** — the raw file is wrong. Screen on a sane high/low ratio and a minimum price before computing returns. |
-| **Security type is missing for older names, and the gap tracks survival.** Filtering on a security type to drop warrants and preferreds also drops companies that were acquired or went bankrupt, hardest in the early sample. Share of liquid name-days (close ≥ $5, dollar volume ≥ $1 M) in June with **no usable type**: **23.7% in 2004, 16.8% 2008, 11.6% 2012, 6.2% 2016, 4.1% 2020, 1.2% 2024.** | **Open, and the failure is silent.** Two separate causes. (a) Join on `ticker`, never on the adjusted lake's `id`: `NOFIGI__` and `#SEG` ids describe an unknown company and by design have no master row, so an id join misses 38.8% of 2004 liquid name-days against 23.7% for a ticker join. (b) Even a matched row often carries a **null** `type` — 4,552 of 29,082 master rows, and **100% of those are delisted**. A null type cannot exclude a warrant, so it is a miss that looks like a hit. Count it as a miss. Do not substitute `market_tickers.type`, which is null for 18.4% of rows and covers 2004 worse. Closing this needs the delisted-ticker endpoints and a paid plan. |
-| **Timezone differs between lakes.** Adjusted lakes store `datetime` tz-naive **UTC**; unadjusted lakes store tz-aware **US/Eastern**. Joining the two without converting misaligns every row. | **By design, handled by the loaders.** `load_series` reconciles it; pass `source_tz="UTC"` to `load_polygonio_lake` on an adjusted lake. |
-| **The 16:00 minute bar is not the official close.** The daily `open` equals the 09:30 minute bar's open for every ticker, but the daily `close` is the official closing price and the 16:00 minute bar's close is only the last print inside that minute — they agree for 52.7% of the market, median gap 13 bp. | **Expected.** Use the daily file for the official close; never mix a daily price with a minute price in one ratio. |
+- **Ticker casing — fixed; the lakes were rebuilt.** Polygon encodes share class in letter case
+  (`AAp` is Alcoa's $3.75 preferred, a different security from `AAP` common; `AANw` is a warrant, a
+  trailing lowercase `p`/`w`/`r` marks a preferred series, warrant or right). `polygon_ingest` used
+  to upper-case on ingest, so about 90 symbols carried two securities' bars — 29,258 duplicated
+  ticker-days, 0.13% of the day lake — and the adjusted lakes gave those rows the common stock's
+  holder id, splits and dividends. Symbols are now stored exactly as Polygon spells them, in the
+  lakes and in the reference tables: the day lake went from 33,708 to 33,833 symbols with the same
+  46,490,595 rows, and 4,041 symbols carry a lowercase class letter. **Group by the ticker as
+  spelled**, never by an upper-cased copy. See *Ticker case* under Notes & Conventions.
+- **No corporate actions for preferred and warrant lines.** Polygon's splits and dividends endpoints
+  return nothing for the mixed-case symbols (`?ticker=AAp` is empty on both), so those securities come
+  out of the adjuster with `close_tr` equal to `close_sa` for their whole history. That reads like a
+  working total-return series and is not one. A source gap, not a pipeline one.
+- **One mis-stamped source file.** 28 ticker-days on 2019-08-13 still carry two rows: the
+  `2019-08-12` flat file holds 29 rows stamped with the next trading day, 28 of whose symbols also
+  appear in that day's own file. Both rows are legitimately stamped `2019-08-13 00:00` ET, so no
+  ingest rule can separate them. 56 rows of 46.5 million; keep the higher-volume row, as notebook 04
+  does.
+- **Symbols with no reference row.** 1,853 of the day lake's 33,833 tickers have none — 904 of them
+  class lines (preferred series, warrants, rights) the tickers endpoint does not carry, the rest mostly
+  exchange test symbols. `ZTEST`, `ZVZZT` and friends quote up to $500,000 and rank first by dollar
+  volume in 167 of the universe's 262 months. Exclude them (`--exclude-tickers` on the universe build)
+  before any return study.
+
+- **Recycled symbols — fixed.** A symbol reassigned to a new company used to keep one holder `id` for
+  its whole history, because no ticker in the security master has a *confirmed* start date (the derive
+  runs without `--probe-dates`). So `ARM` bars from 2003 were credited to Arm Holdings, which listed in
+  2023, and that company's splits were applied to them; `COIN`, `APP`, `ANET`, `AXON` and `GM` the same.
+  The adjuster now cuts a ticker's history wherever it stopped trading for 60 days or more and gives
+  each earlier segment its own id, `NOFIGI__<TICKER>#SEG<n>`, re-keying corporate actions onto those
+  segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "before the current owner,
+  identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
+  cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
+- **Security type is missing for older names, and the gap tracks survival.** Filtering on a type to drop
+  warrants and preferreds also drops companies that were acquired or went bankrupt, hardest early:
+  liquid name-days (close ≥ $5, dollar volume ≥ $1 M) in June with **no usable type** run 22.8% in 2004,
+  15.6% 2008, 9.8% 2012, 4.1% 2016, 1.8% 2020, 0.0% 2024. Two causes. Join on `ticker`, never on the
+  adjusted lake's `id` — an id join misses 38.8% of 2004 because `NOFIGI__` and `#SEG` ids have no master
+  row by design. And a matched row often carries a **null** type: 4,554 of 29,078 master rows, **100% of
+  them delisted**, so it is a miss that looks like a hit. Do not substitute `market_tickers.type`, null
+  for 18.4% of rows and worse for 2004. Closing it needs the delisted-ticker endpoints and a paid plan.
+  The 517-ticker collection is unaffected: all 517 carry a type.
+- **Bad ticks survive in the source data.** Polygon's own files carry occasional bad prints and a daily
+  aggregate inherits them: `SIRI` on 2007-06-13 closes at 25.55 against a true range of 2.75–2.80,
+  from one 22.29 print at 15:50; `SMS` on 2008-03-20 has a $0.01 low against a $26 stock. Not fixable in
+  the pipeline. Screen on a sane high/low ratio and a minimum price before computing returns.
+- **Timezone differs between lakes.** Adjusted lakes store `datetime` tz-naive **UTC**; unadjusted lakes
+  store tz-aware **US/Eastern**. `load_series` reconciles it; pass `source_tz="UTC"` to
+  `load_polygonio_lake` on an adjusted lake. Joining the two without converting misaligns every row.
+- **The 16:00 minute bar is not the official close.** The daily `open` equals the 09:30 minute bar's open
+  for every ticker, but the daily `close` is the official closing price while the 16:00 minute bar's close
+  is only the last print inside that minute — they agree for 52.7% of the market, median gap 13 bp. Use
+  the daily file for the official close, and never mix a daily price with a minute price in one ratio.
 
 Notebook 03 loads and plots:
 - **Unadjusted `close`**
@@ -420,6 +464,20 @@ Group by `id` (the company), not by `ticker`: a recycled symbol's two companies 
 
 - **Time zone:** the `datetime` column in the unadjusted lake is tz-aware **US/Eastern**. Lake files are partitioned on the **ET trading date** (`<YYYY>/<MM>/<DD>`), and split/dividend factors are aligned on that same date, so after-hours bars (up to 20:00 ET) stay with their session instead of spilling into the next UTC day.
 - **Precision:** prices are stored as `float64`.
+- **Ticker case:** symbols are stored exactly as Polygon spells them, because the case *is* the
+  share class: `AAP` is Advance Auto Parts, `AAp` the Alcoa $3.75 preferred, `AAGpT` a preferred
+  series, `AANw` a warrant. Joins between Polygon's own tables (prices, security master, splits,
+  dividends) are therefore exact. A **ticker list you supply** (`--watch`, `--only`, `--tickers`,
+  `--exclude-tickers`, the loaders' `tickers=`) is matched exactly first and then case-insensitively
+  where only one symbol could have been meant, so a list typed in capitals works and `aapl` still
+  finds `AAPL`, while `AAP` never claims `AAp` and an ambiguous request is refused rather than
+  guessed. The streaming ingester cannot resolve against a symbol universe it has not read yet, so
+  `--watch`/`--only` match exactly there and the run reports both the entries that matched nothing
+  and the symbols skipped for differing only in case; `--ignore-case` matches on letters alone.
+  One platform caveat: `<root>/AAP` and `<root>/AAp` are the same directory on a case-folding
+  filesystem (stock macOS APFS), so the **ticker layout** refuses a watchlist holding two spellings
+  of a symbol and fails the run if two reach the writer — use `--layout market` for a whole-market
+  lake there. `polygon_ingest/tickers.py` holds the rules and the helpers.
 - **Layouts:** `ticker` (`<root>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet`, default, best for a few hundred symbols) or `market` (`<root>/<YYYY>/<MM>[/<DD>].parquet`, all tickers per file, for the whole universe and cross-sectional work such as point-in-time universes; minute day files carry a `.idx.parquet` per-ticker sidecar). Detected automatically by the loaders and by both adjuster paths; `factor_builder.py --layout` / `build_adjusted_lake.sh -L` override.
 - **Ids:** every adjusted row carries `id`, the holder (company) of the ticker on that date, keyed like the security master. Splits and dividends are matched by `id`, never by ticker alone, so a recycled ticker's previous company keeps only its own corporate actions and anchors its own adjustment factors. A ticker with a single known holder gets that id for all its rows regardless of dates (windows only disambiguate between holders), except rows before a *confirmed* symbol-adoption date or after a *confirmed* end (real ticker changes / delistings from the events and tickers tables), which are left to an unknown holder. An unconfirmed `list_date` never cuts, so an imprecise date cannot split one company's history. To stitch one company across a symbol change (`FB` → `META`), include both symbols in the ingest watchlist; `ticker_symbol_history.parquet` lists them.
 - **Total return (`close_tr`)**: built over split-adjusted prices, reinvesting cash dividends on ex-date. Sanity check: on a day with no dividend `close_tr` moves exactly like `close_sa`, and across an ex-date where the price drops by exactly the dividend the `close_tr` return is 0. Polygon reports dividends in raw dollars, so amounts are scaled by the split factor in force before being divided by the split-adjusted base.

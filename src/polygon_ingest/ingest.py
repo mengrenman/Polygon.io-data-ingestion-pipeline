@@ -15,7 +15,8 @@ Output layout:
 Highlights
 - One codepath for both timeframes (tf={"minute","day"})
 - Robust header detection & timestamp unit inference (s/ms/us/ns or ISO8601)
-- Case-insensitive watchlist and --only TICKER filtering
+- Tickers stored exactly as Polygon spells them (the case carries the share class); watchlist and
+  --only match exactly, with --ignore-case for lists typed in the wrong case (see polygon_ingest.tickers)
 - Stable progress bar that stays at 100%
 - Optional manifest with progress bar and threaded scan
 - Optional file logging with --log-file and --quiet-console
@@ -61,6 +62,11 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
+
+try:
+    from .tickers import case_collisions, clean_list, fs_folds_case
+except ImportError:      # running this file directly (python ingest.py ...), as the docstring shows
+    from tickers import case_collisions, clean_list, fs_folds_case
 
 # ── config ────────────────────────────────────────────────────────────────────
 CHUNK_DEFAULT = 5_000_000
@@ -223,6 +229,24 @@ def day_index(df: pd.DataFrame) -> pd.DataFrame:
                  row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
 
 
+def _clashes(key: tuple, layout: Layout, fold_guard: bool, spelling_of: Dict[str, str],
+             clashes: set) -> bool:
+    """True when this bucket's ticker would be written to a directory another spelling already owns.
+
+    Only the ticker layout names a directory after a symbol, and only a case-folding filesystem makes
+    <out>/AAP and <out>/AAp the same directory. There the second write silently replaces the first, so
+    the bucket is refused and the run fails rather than losing one of the two securities.
+    """
+    if not (fold_guard and layout == "ticker"):
+        return False
+    ticker = str(key[0])
+    first = spelling_of.setdefault(ticker.upper(), ticker)
+    if first != ticker:
+        clashes.add((first, ticker))
+        return True
+    return False
+
+
 def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf, layout: Layout) -> None:
     """Write one bucket: ticker layout <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet, market layout <out>/<YYYY>/<MM>[/<DD>].parquet."""
     base_cols = ["datetime", "ticker", "open", "high", "low", "close", "volume", "transactions", "vwap", "yr_et", "mo_et"] + (["day_et"] if tf == "minute" else [])
@@ -262,12 +286,14 @@ def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf,
 def worker(
     csv_list: Sequence[str],
     out_root: Path,
-    watch_upper: Optional[set[str]],
-    only_upper: Optional[str],
+    watch: Optional[set[str]],
+    only: Optional[str],
     chunk: int,
     worker_id: int,
     tf: Tf,
     layout: Layout = "ticker",
+    ignore_case: bool = False,
+    fold_guard: bool = False,
 ):
     global PROG_COUNTER, LOG_QUEUE
 
@@ -277,6 +303,16 @@ def worker(
     usecols: List[str] = []
 
     rows_in = rows_kept = dropped_watch = dropped_only = 0
+    watch_upper = {t.upper() for t in watch} if watch is not None else None
+    only_upper = only.upper() if only is not None else None
+    matched: set[str] = set()        # watchlist symbols this worker actually saw
+    near_misses: set[str] = set()    # symbols dropped that differ from a watchlist entry only in case
+    classified: set[str] = set()     # spellings already checked against the watchlist (see below)
+    # <out>/<TICKER> is one directory per symbol, so on a case-folding filesystem AAP and AAp are the
+    # same path. Source files are sharded by (year, month), so both spellings of a symbol in the same
+    # period always reach the same worker - a per-worker map catches every collision that could occur.
+    spelling_of: Dict[str, str] = {}
+    clashes: set[Tuple[str, str]] = set()
 
     # bucket key: ticker layout (ticker, yr, mo[, dd]); market layout (yr, mo[, dd]). Buckets are written as
     # soon as they can no longer receive rows (see _flushable), bounding memory to ~2 periods per worker.
@@ -330,18 +366,35 @@ def worker(
                 # unify ticker col
                 if ticker_col != "ticker":
                     df.rename(columns={ticker_col: "ticker"}, inplace=True)
-                df["ticker"] = df["ticker"].astype("string").str.upper()
+                # Stored exactly as Polygon writes it: the case is the share class. AAp is the Alcoa
+                # $3.75 preferred, a different security from AAP (Advance Auto Parts); upper-casing
+                # merged the two into one symbol. See polygon_ingest.tickers.
+                df["ticker"] = df["ticker"].astype("string")
 
                 # filters
-                if only_upper:
+                if only is not None:
                     before = len(df)
-                    df = df.loc[df["ticker"] == only_upper]
+                    hit = df["ticker"].str.upper().isin([only_upper]) if ignore_case else df["ticker"].isin([only])
+                    df = df.loc[hit]
                     dropped_only += (before - len(df))
                     if df.empty: continue
 
-                if watch_upper is not None:
+                if watch is not None:
                     before = len(df)
-                    df = df.loc[df["ticker"].isin(watch_upper)]
+                    if ignore_case:
+                        keep = df["ticker"].str.upper().isin(watch_upper)
+                    else:
+                        keep = df["ticker"].isin(watch)
+                        # A symbol that differs from a watchlist entry only in case is a *different*
+                        # security, so it is dropped - but silently dropping it is the surprise a
+                        # caller most needs told about, so collect the spellings for the summary.
+                        # Only new spellings are upper-cased, which keeps this off the per-row path.
+                        fresh = set(df.loc[~keep, "ticker"].drop_duplicates().dropna()) - classified
+                        if fresh:
+                            classified |= fresh
+                            near_misses |= {t for t in fresh if t.upper() in watch_upper}
+                    matched.update(df.loc[keep, "ticker"].drop_duplicates().dropna())
+                    df = df.loc[keep]
                     dropped_watch += (before - len(df))
                     if df.empty: continue
 
@@ -381,12 +434,18 @@ def worker(
                 cur = None
             if cur is not None:
                 for k in _flushable(list(buckets.keys()), cur, tf):
+                    if _clashes(k, layout, fold_guard, spelling_of, clashes):
+                        buckets.pop(k)
+                        continue
                     _write_bucket(out_root, k, buckets.pop(k), tf, layout)
                     written += 1
 
     finally:
         # Write whatever is still buffered
         for k in list(buckets.keys()):
+            if _clashes(k, layout, fold_guard, spelling_of, clashes):
+                buckets.pop(k)
+                continue
             _write_bucket(out_root, k, buckets.pop(k), tf, layout)
             written += 1
 
@@ -397,7 +456,14 @@ def worker(
                 f"written_files={written}"
             )
 
-    return worker_id, written
+    if clashes:
+        pairs = ", ".join(f"{a} vs {b}" for a, b in sorted(clashes)[:6])
+        raise RuntimeError(
+            f"ticker-layout lake on a case-folding filesystem: {pairs} would share one directory, so one "
+            f"security's files would replace the other's. Their rows were not written. Use --layout market, "
+            f"write to a case-sensitive volume, or restrict --watch to one spelling of each symbol."
+        )
+    return worker_id, written, matched, near_misses
 
 # ── main progress thread (stays at 100%) ─────────────────────────────────────
 def progress_thread(total_files, counter, stop_event):
@@ -518,10 +584,35 @@ def run_ingest(
     manifest_out: Optional[Path] = None,
     manifest_workers: int = 4,
     layout: Layout = "ticker",
+    ignore_case: bool = False,
 ):
     import multiprocessing as mp
 
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # Load the watchlist before anything else: it decides whether a ticker-layout lake can be written
+    # safely on this filesystem (see _clashes).
+    def load_watch(path: Optional[Path]) -> Optional[List[str]]:
+        """Ticker list, spelled as the caller wrote it (json list or one per line)."""
+        if not path: return None
+        if not path.exists(): raise FileNotFoundError(str(path))
+        vals = json.load(open(path)) if path.suffix.lower() == ".json" else open(path).read().splitlines()
+        return clean_list(vals)
+    watch_list = load_watch(watch)
+    only = next(iter(clean_list([only])), None) if only else None
+
+    fold_guard = layout == "ticker" and fs_folds_case(out_root)
+    if fold_guard:
+        selected = [only] if only is not None else watch_list
+        clashing = case_collisions(selected) if (selected is not None and not ignore_case) else {}
+        if clashing:
+            pairs = "; ".join(f"{k}: {', '.join(v)}" for k, v in sorted(clashing.items())[:6])
+            raise SystemExit(
+                f"[ERROR] {out_root} is on a filesystem that folds letter case, so <out>/AAP and <out>/AAp are\n"
+                f"        one directory, but these entries differ only in case and name different securities:\n"
+                f"        {pairs}\n"
+                f"        Use --layout market, write to a case-sensitive volume, or keep one spelling per symbol."
+            )
 
     # Start logger thread
     global LOG_QUEUE, QUIET_CONSOLE
@@ -533,20 +624,11 @@ def run_ingest(
     LOG(f"[INFO] Source: {src_root}", critical=True)
     LOG(f"[INFO] Output: {out_root}", critical=True)
     LOG(f"[INFO] Layout: {layout}", critical=True)
-    if watch: LOG(f"[INFO] Watchlist: {watch}", critical=True)
-    if only:  LOG(f"[INFO] Only: {only.upper()}", critical=True)
+    if watch: LOG(f"[INFO] Watchlist: {watch} ({len(watch_list)} symbols, "
+                  f"{'case-insensitive' if ignore_case else 'matched exactly'})", critical=True)
+    if only:  LOG(f"[INFO] Only: {only}", critical=True)
 
-    # Load watch list
-    def load_watch_upper(path: Optional[Path]) -> Optional[set[str]]:
-        if not path: return None
-        if not path.exists(): raise FileNotFoundError(str(path))
-        if path.suffix.lower() == ".json":
-            vals = json.load(open(path))
-        else:
-            vals = [line.strip() for line in open(path) if line.strip()]
-        return {str(x).upper() for x in vals}
-    watch_upper = load_watch_upper(watch)
-    only_upper = only.upper() if only else None
+    watch_set = set(watch_list) if watch_list is not None else None
 
     n_workers = max(1, int(workers))
     chunk = int(chunk)
@@ -603,10 +685,15 @@ def run_ingest(
         futures = []
         for wid in range(n_workers):
             futures.append(ex.submit(
-                worker, owned_csvs[wid], out_root, watch_upper, only_upper, chunk, wid, tf, layout
+                worker, owned_csvs[wid], out_root, watch_set, only, chunk, wid, tf, layout,
+                ignore_case, fold_guard
             ))
+        matched: set[str] = set()
+        near_misses: set[str] = set()
         for f in futures:
-            wid, nkeys = f.result()
+            wid, nkeys, m, n = f.result()
+            matched |= m
+            near_misses |= n
             LOG(f"worker {wid:3d}: wrote {nkeys} parquet partitions")
 
     # Finish progress
@@ -615,6 +702,23 @@ def run_ingest(
     stop_event.set()
     thr.join()
     LOG("[INFO] All workers completed.", critical=True)
+
+    # Matching is exact, so a watchlist entry spelled in the wrong case now finds nothing where it
+    # used to find the symbol. Say so, and name the symbols that were skipped for that reason - they
+    # are real securities (preferred series, warrants, rights) that happen to share a common stock's
+    # letters, and the caller has to decide whether they wanted them.
+    if watch_list is not None:
+        missed = [t for t in watch_list if t not in matched]
+        if missed:
+            LOG(f"[INFO] {len(missed)} of {len(watch_list)} watchlist symbols matched no rows: "
+                f"{', '.join(missed[:20])}{' ...' if len(missed) > 20 else ''}", critical=True)
+        if near_misses:
+            LOG(f"[INFO] {len(near_misses)} symbol(s) differing from a watchlist entry only in letter case "
+                f"were NOT ingested: {', '.join(sorted(near_misses)[:20])}"
+                f"{' ...' if len(near_misses) > 20 else ''}", critical=True)
+            LOG("[INFO]   Polygon spells share class in case (a lowercase p/w/r marks a preferred series, "
+                "warrant or right), so these are different securities. Add the exact spelling to the "
+                "watchlist to keep them, or pass --ignore-case to match on letters alone.", critical=True)
 
     # Manifest (with progress bar)
     if write_manifest:
@@ -635,8 +739,13 @@ if __name__ == "__main__":
     ap.add_argument("--tf", required=True, choices=["minute","day"], help="timeframe")
     ap.add_argument("--src", required=True, type=Path, help="root folder (supports nested YYYY/MM)")
     ap.add_argument("--out", required=True, type=Path, help="destination Parquet lake")
-    ap.add_argument("--watch", type=Path, default=None, help="JSON/TXT ticker list (optional, case-insensitive)")
-    ap.add_argument("--only", type=str, default=None, help="Restrict to a single ticker (e.g., AAPL)")
+    ap.add_argument("--watch", type=Path, default=None,
+                    help="JSON/TXT ticker list (optional). Matched exactly: Polygon spells share class in "
+                         "letter case, so AAP selects Advance Auto Parts and not the AAp preferred")
+    ap.add_argument("--only", type=str, default=None, help="Restrict to a single ticker, matched exactly (e.g., AAPL)")
+    ap.add_argument("--ignore-case", action="store_true",
+                    help="Match --watch/--only on letters alone, so AAP also selects AAp, AAPw, ... "
+                         "(different securities; not safe for --layout ticker on a case-folding filesystem)")
     ap.add_argument("--layout", choices=["ticker", "market"], default="ticker",
                     help="ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet | market: <out>/<YYYY>/<MM>[/<DD>].parquet with all tickers (whole universe)")
     ap.add_argument("--workers", type=int, default=os.cpu_count()//2 or 1, help="parallel workers")
@@ -663,4 +772,5 @@ if __name__ == "__main__":
         write_manifest=args.write_manifest,
         manifest_out=args.manifest_out,
         manifest_workers=args.manifest_workers, layout=args.layout,
+        ignore_case=args.ignore_case,
     )
