@@ -29,6 +29,7 @@ need — individual plans are licensed personal/non-commercial and forbid redist
 | **Futures** | $0 / $29 / **$79** / $199 | **Developer $79** — adds trades and quotes over Starter's minute aggregates. Caveats in §4. |
 | **Indices** | $0 / **$49** / $99 | **Starter $49**, with low expectations. History starts 2023-02-14 even on the top tier. |
 | **Currencies** (forex + crypto, one product) | $0 / $49 | **Skip.** Reasoning in §5. |
+| **Benzinga** (partner add-on) | $99/month **per dataset** | **Not yet** — two correctness questions to resolve first. See §6. |
 
 Flat-file (S3) access is **bundled into the tier**, not a separate add-on. **(verified)** Within an
 asset class the gating is by *data type*: for options, aggregates need Starter, trades need
@@ -208,7 +209,86 @@ individual tier. **(verified)** Recommendation: skip.
 
 ---
 
-## 6. Suggested order
+## 6. Partner data: Benzinga
+
+Sold as a **partner add-on at $99/month per dataset**, six products priced separately. **(verified)**
+Consensus Ratings is bundled into Analyst Ratings rather than sold on its own. **(verified)** Whether
+a base Stocks subscription is *also* required is **unresolved** — the "no base subscription required"
+line on the pricing page belongs to a structurally different section (specialized datasets), not to
+partner data. **(verified as unresolved)**
+
+### Coverage against this repository's point-in-time universe
+
+History is **not gated by tier** — the $99 individual plan gets "all history" on both individual and
+business tiers. **(verified)** Coverage below is the share of the 262,000 member-months in
+`universes/top1000_cs_monthly` (2003-11 to 2025-08) that falls after each archive's start date.
+
+| dataset | history from | covers | note |
+|---|---|---|---|
+| News | 2009-04-27 | **75.2%** | `GET /benzinga/v2/news`; `limit` max 50,000 |
+| Earnings | 2010-04-30 | 70.6% | actuals **and** estimates, with surprise fields |
+| Corporate Guidance | 2011-09-12 | 64.1% | updated every 2 hours, not real time |
+| Analyst Ratings | 2011-12-08 | 63.0% | includes price targets and rating actions |
+| Analyst Insights | 2020-01-02 **or** 2023 | 26.0% or 12.2% | Massive's docs and marketing page disagree by ~3 years **(verified discrepancy)** |
+| Bulls / Bears Say | none | — | current snapshot per ticker; not a dated series |
+
+Archive depth is therefore **not** the obstacle. Two other things are.
+
+### Blocker 1 — REST only, no flat files
+
+There is no S3/flat-file delivery for any Benzinga dataset. **(verified** — all nine partner doc
+pages grepped for `flat file`/`s3`/`bulk` with zero matches, and none of the 33 entries in the
+flat-files index is a Benzinga path.**)** Every other dataset this pipeline consumes arrives as a
+daily flat file; Benzinga would need a second ingestion architecture — paginated REST with
+incremental state and its own resume logic. The 50,000-row `limit` on News makes that more tractable
+than it first appears, but it is still a pattern this repository does not have.
+
+### Blocker 2 — no revision history, and point-in-time accuracy is undocumented
+
+No Benzinga schema exposes a revision, correction or audit-trail field, and nothing in the docs
+states whether a historical query returns a record **as it stood then** or **as it stands now**.
+**(verified** — zero matches for "point-in-time" or "latency" across all nine pages; the only
+timestamps are `published`/`last_updated`.**)**
+
+This is decisive. If the API returns current state, a revised price target or a corrected article
+reads back as though it had always said that, and every backtest built on it carries silent
+look-ahead. That is the exact failure mode the rest of this pipeline is constructed to prevent —
+see the security-type inference, where the missing field correlated with delisting and therefore
+with survival.
+
+### The unanswered question: does the archive cover dead names?
+
+**51% of the universe's members are symbols that are no longer active** — 2,134 of 4,160, including
+`AABA`, `ABC`, `ABGX` and `ABFS`. News vendors index what they currently cover, and coverage of a
+company tends to stop at delisting without backfill. If that holds here, the half of the universe
+carrying the survivorship signal is the half the news is thinnest on — and the join would *succeed*,
+just with systematically fewer articles on the names that died. Nothing in the documentation
+addresses this either way.
+
+### Recommendation
+
+**Not in the same round as the market-data purchase.** Options is a clean extension of machinery
+that already exists and is already trusted; Benzinga is a new ingestion pattern, new licensing, and
+two open correctness questions. Resolve these first, both cheap:
+
+1. **Does the archive cover delisted names?** Testable with a handful of REST calls against `AABA`,
+   `ABGX`, `ABFS` during a trial.
+2. **Does a historical query return the original record or the current one?** Ask support — the docs
+   are silent and it is not inferable.
+
+If both come back clean, buy **one** dataset, not the suite. **News** ($99) has the deepest history
+and widest coverage. But if the real goal is event studies rather than NLP, **Earnings** is the
+better first purchase: structured actuals and estimates with surprise fields, 70.6% coverage, and no
+text-processing layer to build. Skip Analyst Insights until Massive reconciles its own two pages,
+and skip Bulls/Bears Say outright — a current snapshot cannot be backtested.
+
+Note the cost shape: at $99 *per dataset*, News + Earnings + Ratings is $297/month, comparable to
+the entire market-data stack. And the individual tier is licensed personal/non-commercial,
+"display use only". **(verified)**
+
+---
+
+## 7. Suggested order
 
 | phase | work | why here |
 |---|---|---|
@@ -221,7 +301,7 @@ individual tier. **(verified)** Recommendation: skip.
 | — | Indices | Small and independent; slot in anywhere |
 | — | Options **quotes** | Never mirrored. Pull per study, into scratch, and delete |
 
-## 7. The architectural decision
+## 8. The architectural decision
 
 "Stocks" is currently implicit everywhere. The cheap generalisation is an **asset-class config
 object** threaded through — carrying the symbol parser, the session/trading-date rule, whether
