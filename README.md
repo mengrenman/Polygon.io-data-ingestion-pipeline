@@ -254,6 +254,19 @@ This pulls **market-wide** reference tables once — a few hundred requests in t
 
 Re-running is **incremental**: splits and dividends are fetched from the latest date already held minus 30 days and merged by `id`; the tickers table is refreshed in full. Pass `--full` (via `bash scripts/pull_ref_data.sh --full`) to refetch everything. The same mechanism makes a long pull **resumable**: pages arrive in date order and are checkpointed to the table every 25 pages (and on any error), so if a multi-hour dividends pull dies on a network blip, rerunning `bash scripts/pull_ref_data.sh --tables dividends` continues from where it stopped instead of starting over (`--tables` skips refetching the other tables).
 
+**Re-deriving without re-pulling.** `refdata/<collection>/` is a filtered snapshot of the market tables, so it goes stale in two different ways. New data needs a pull. A change to *how* the files are derived — a new column, different ticker matching, a new inference — needs no requests at all, only a re-derive:
+
+```bash
+# whole universe; for a collection the wrapper takes the same flag: bash scripts/pull_ref_data.sh --tables ""
+python legacy_scripts/run_pullers.py --bulk --tables "" --no-normalize \
+  --tickers data/universes/all_tickers.json --outdir refdata/all \
+  --market-dir refdata/_market
+```
+
+`--tables ""` pulls nothing and reads all three market tables from disk. `POLYGON_API_KEY` still has to be set — `run_pullers.py` resolves it before it knows it will not need it — but no request is made. Budget about **9 minutes** for the full market, nearly all of it filtering the 2 M-row dividends table.
+
+This one is easy to miss, because **nothing fails**. The old files still load, still join, and still carry every column they carried before. When the security-type inference landed, `security_master.parquet` went five days without its `type_inferred` / `type_source` columns: every consumer reading that file kept seeing the original 15.7 % null-`type` gap, while the point-in-time universe — which infers on the fly and never reads the file — looked correct throughout. After changing anything on the derive path, check for the new column on the file itself rather than trusting that the code change reached it.
+
 A **holder** is the company behind a ticker, `holder_id` = composite FIGI → `CIK__<cik>` → `NOFIGI__<TICKER>`. A recycled symbol (General Motors Corp until 2009, General Motors Company from 2010-11-18) appears in the tickers table as one active and one delisted record and becomes two holders with a window boundary at the delisting date, so the second company's splits and dividends never touch the first one's prices. If the previous company was *renamed* before delisting, its delisted record is under its final symbol; use probe dates for those:
 
 ```bash
