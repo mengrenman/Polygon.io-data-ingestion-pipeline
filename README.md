@@ -121,6 +121,9 @@ repo_polygonio/
 │  ├─ day/all_adjusted/<YYYY>/<MM>.parquet          # market layout, every ticker, holder `id` per row
 │  └─ minute/all_adjusted/<YYYY>/<MM>/<DD>.parquet  # market layout (+ <DD>.idx.parquet)
 │
+├─ docs/
+│  └─ asset-class-expansion.md          # plan (not implemented): options / futures / indices
+│
 ├─ notebooks/                            # all executed against the real lakes, outputs committed
 │  ├─ 01_index_universes.ipynb           # today's SPX/NDX lists (survivorship biased — see 05)
 │  ├─ 02_extract_tickers.ipynb           # every symbol in the flat files, case preserved
