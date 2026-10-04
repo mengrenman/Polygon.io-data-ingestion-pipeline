@@ -127,7 +127,7 @@ class TestStreamingDividendFactors:
 
 
 # ---------------------------------------------------------------------------
-# Split factors (unchanged behaviour, guarded)
+# Split factors (unchanged behavior, guarded)
 # ---------------------------------------------------------------------------
 class TestSplitFactors:
     def test_two_for_one_split_halves_earlier_prices_and_doubles_volume(self):

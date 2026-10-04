@@ -146,7 +146,7 @@ Traced against the actual code, not assumed:
    non-standard is a non-empty `additional_underlyings` array — e.g. an AAPL contract also delivering
    44 shares of VMW and $6.53 cash. There is no `is_adjusted` flag, and the OCC alternate-root
    grammar (`SPY1`, `AAPL2`) is **undocumented anywhere on the vendor's site**. **(verified)** This
-   is the options analogue of the holder-id problem, and it will need the same treatment
+   is the options analog of the holder-id problem, and it will need the same treatment
    `security_type.py` gave the missing equity type: inference, validated against a known-answer
    sample, with a provenance column saying which rows were inferred.
 
@@ -303,7 +303,7 @@ the entire market-data stack. And the individual tier is licensed personal/non-c
 
 ## 8. The architectural decision
 
-"Stocks" is currently implicit everywhere. The cheap generalisation is an **asset-class config
+"Stocks" is currently implicit everywhere. The cheap generalization is an **asset-class config
 object** threaded through — carrying the symbol parser, the session/trading-date rule, whether
 corporate actions apply, and the expected columns — with lake roots becoming
 `lake/<asset_class>/<tf>/<collection>`. The alternative, `if asset_class == "options"` scattered
@@ -311,4 +311,4 @@ across ingest, `lake_io` and the builders, will rot.
 
 Equally important is being explicit about what stays **equity-only**: the point-in-time universe,
 `factor_builder`, holder ids, and the security-type inference. Those are about *companies*. They
-should not be generalised.
+should not be generalized.

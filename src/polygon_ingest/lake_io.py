@@ -229,7 +229,7 @@ def select_lake_files(
 
     Returns: list[Path]
     """
-    # Symbols keep their spelling; only the match against the lake normalises case (see _resolve_against_lake)
+    # Symbols keep their spelling; only the match against the lake normalizes case (see _resolve_against_lake)
     root = Path(root)
     if layout == "auto":
         layout = detect_layout(root)

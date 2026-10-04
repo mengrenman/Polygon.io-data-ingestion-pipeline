@@ -1,5 +1,5 @@
 """
-Refdata puller behaviour without network: retry/backoff on rate limits, hard-fail on unknown
+Refdata puller behavior without network: retry/backoff on rate limits, hard-fail on unknown
 tickers, and loud recording of tickers whose pull failed (a silently dropped splits row means an
 unadjusted series across that ticker's splits downstream).
 """
