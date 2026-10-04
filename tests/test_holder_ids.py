@@ -153,7 +153,7 @@ class TestNoCrossApplication:
         assert G["tr_price_factor"].tolist() == pytest.approx([1.0, 1.0, 34.0 / 35.0, 1.0])
 
     def test_nofigi_id_still_falls_back_to_ticker_events(self):
-        # no security-master information at all -> NOFIGI id, ticker-keyed events still apply (previous behaviour)
+        # no security-master information at all -> NOFIGI id, ticker-keyed events still apply (previous behavior)
         sm = pd.DataFrame({"ticker": [], "composite_figi": []})
         px = pd.DataFrame({"ticker": "Q", "datetime": bars("2015-01-02", "2015-06-01"), "close": [10.0, 5.0], "volume": [1, 1]})
         px_id = fb._attach_id(px, sm)

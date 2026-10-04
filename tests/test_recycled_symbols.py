@@ -130,7 +130,7 @@ class TestEventsRespectSegments:
         out, _, _ = fb._adjust_frame(px, sm, spl, pd.DataFrame(
             {"ticker": [], "ex_date": pd.to_datetime([]), "cash_amount": []}), adjust="splits", gap_days=0)
         old = out[out["datetime"] < "2004-01-01"]
-        assert (old["split_price_factor"] == 0.5).all()      # the behaviour being fixed
+        assert (old["split_price_factor"] == 0.5).all()      # the behavior being fixed
 
 
 class TestTickerCaseIsPreserved:

@@ -275,7 +275,7 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
     cols = ["ticker", "holder_id", "effective_start", "effective_end", "anchor_date", "start_confirmed", "end_confirmed"]
     if s.empty:
         return s[cols]
-    # Same rules as polygon_pullers._dedupe_holders, vectorised (a loop over the 29k groups of the market security
+    # Same rules as polygon_pullers._dedupe_holders, vectorized (a loop over the 29k groups of the market security
     # master cost ~9 s per call): a confirmed start (real ticker change) beats an unconfirmed list_date; an open end
     # beats a stale delisted record of the same company.
     keys = ["ticker", "holder_id"]
@@ -1618,7 +1618,7 @@ def _stream_write_minutes(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFram
 
 def _adjust_frame(px: pd.DataFrame, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, adjust: str,
                   workers: int = 1, gap_days: int = RECYCLE_GAP_DAYS) -> Tuple[pd.DataFrame, dict, bool]:
-    """Batch adjustment of a price frame: holder ids, split factors, dividend factors, renormalisation.
+    """Batch adjustment of a price frame: holder ids, split factors, dividend factors, renormalization.
     Returns (adjusted frame, per-id stats, use_split_base)."""
     segs = _recycled_segments(_norm_ticker(px["ticker"]).to_numpy(), _trading_day(_to_naive_utc(px["datetime"])),
                               sm, gap_days)
@@ -1757,7 +1757,7 @@ def _merge_market_parts(parts_root: Path, outdir: Path, workers: int) -> int:
 def _run_batch_sharded(args, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame, layout: str,
                        tickers: Optional[List[str]]) -> Path:
     """Batch build over `args.workers` processes. Each process owns a slice of holders end to end (read, holder ids,
-    split and dividend factors, renormalisation, write), so reading and writing scale with cores as well as the
+    split and dividend factors, renormalization, write), so reading and writing scale with cores as well as the
     per-id maths. Output is identical to the single-process path (--workers 1)."""
     weights = _ticker_weights(args.prices, layout, tickers)
     if not weights:

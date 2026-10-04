@@ -18,7 +18,7 @@ The rules, applied everywhere in this package:
   dividends all use Polygon's spelling, so an exact join is both correct and what keeps `AAp`
   adjusting on Alcoa's preferred actions instead of Advance Auto Parts'.
 * **Matching a user-supplied list is exact first, case-insensitive only as a fallback.** A list
-  typed in capitals means the capitalised symbols, so `AAP` must not drag in `AAp`. But a list
+  typed in capitals means the capitalized symbols, so `AAP` must not drag in `AAp`. But a list
   typed in the wrong case should still work, so `resolve()` falls back to a case-insensitive
   match for entries that have no exact counterpart - and refuses to guess when that is ambiguous.
 
