@@ -1,5 +1,14 @@
 # Expanding beyond US equities — options, futures, indices
 
+*Revised 2026-10-05 to follow the owner's month plan
+(`ML_Alpha_Research/strategy-lab/docs/plan-2026-09-30-month.md`): Stocks Starter plus Financials and
+Benzinga Earnings on day 1, options and futures not this month, indices and currencies declined.
+Changed: Stocks comes first, because the equity data ends 2025-08-13 (§1); greeks and IV can be
+derived later, so open interest is the only options series that needs a daily snapshot, and Options
+Starter is enough to take it (§3); futures need Advanced, not Developer, for full history (§4);
+indices change to skip (§5); Benzinga follows the plan (§6); the order is rebuilt (§7). A re-read of
+Massive's docs on 2026-10-05 corrected the futures tier and the indices depth wording.*
+
 **Status: a plan, not implemented.** Nothing in this repository ingests options, futures or indices
 today. This document records what the vendor actually sells, what it costs, what the existing
 pipeline would and would not reuse, and the order the work should happen in.
@@ -10,6 +19,10 @@ where a second reader confirmed them on a primary docs page, **(single source)**
 reader saw them, and **(estimate)** where they are derived rather than read. Pricing changes;
 re-check before buying.
 
+Pricing, history-depth and entitlement claims were re-read on 2026-10-05 by two independent readers
+of the pricing page and docs; they did not disagree on any claim recorded here. Where Massive's own
+pages disagree with each other, the text says so and uses the docs' plan-history tables.
+
 > **Massive is Polygon.io.** The rebrand completed 2025-10-30 — same company, same account, same
 > endpoints, same S3 flat files. Existing SDKs and URLs keep working, so this is buying entitlements
 > on the account this pipeline already uses, not integrating a new vendor.
@@ -18,29 +31,110 @@ re-check before buying.
 
 ## 1. What to buy
 
-Individual (non-professional) monthly pricing. 20% discount on annual billing. Business tiers are
-separately priced and are for redistribution/commercial use, which a single researcher does not
-need — individual plans are licensed personal/non-commercial and forbid redistribution. **(verified)**
+**Money is not the constraint.** Decide each purchase on two questions: (i) what engineering is
+needed to use the data, and (ii) does waiting lose data that cannot be bought later? The all-history
+tiers start on fixed dates: options aggregates and trades 2014-06-02, futures 2017-04-03, indices
+2023-02-14. **(verified)** On the docs' all-history reading, waiting loses nothing there: the full
+history stays available on the all-history tier (conflict note below). **(estimate)** The lower
+tiers state their depth as N years, which reads as a trailing window that sheds its oldest days over
+time; the docs never use the word "rolling". **(estimate)**
 
-| asset class | tiers | recommendation |
-|---|---|---|
-| **Options** | $0 / $29 / $79 / **$199** | **Advanced $199.** Only Advanced unlocks full history to 2014-06-02; Starter caps at 2 years, Developer at 4. |
-| **Stocks** | $0 / **$29** / $79 / $199 | **Starter $29 minimum.** The current 5 requests/minute limit is the Basic tier; every paid tier is unlimited. |
-| **Futures** | $0 / $29 / **$79** / $199 | **Developer $79** — adds trades and quotes over Starter's minute aggregates. Caveats in §4. |
-| **Indices** | $0 / **$49** / $99 | **Starter $49**, with low expectations. History starts 2023-02-14 even on the top tier. |
-| **Currencies** (forex + crypto, one product) | $0 / $49 | **Skip.** Reasoning in §5. |
-| **Benzinga** (partner add-on) | $99/month **per dataset** | **Not yet** — two correctness questions to resolve first. See §6. |
+Individual (non-professional) monthly pricing, re-read 2026-10-05 for stocks, options, futures,
+indices and Benzinga and unchanged **(verified)**; currencies were not re-read. 20% discount on
+annual billing. Business tiers are separately priced and are for redistribution/commercial use,
+which a single researcher does not need — individual plans are licensed personal/non-commercial and
+forbid redistribution. **(verified)**
+
+| asset class | tiers | recommendation | owner's month plan |
+|---|---|---|---|
+| **Stocks** (+ Financials add-on) | $0 / **$29** / $79 / $199; Financials & Ratios $29, or included in Advanced | **First: Starter $29 + Financials $29 = $58.** Developer (trades) or Advanced (quotes) only when that work exists. Check the account first (below). | **Day 1: Starter + Financials ($58) by default.** |
+| **Options** | $0 / $29 / $79 / **$199** | **Advanced $199** for the archive: only Advanced reaches 2014-06-02 (Starter 2 years, Developer 4). Nothing forces it now if the docs' all-history reading holds (pricing page says 5+ years; conflict note below). **Starter $29** is enough for a snapshot collector (§3). | Not this month. |
+| **Futures** | $0 / $29 / $79 / **$199** | **Advanced $199** for full 2017+ history; Developer $79 is a 5-year window. No deadline if the docs' all-history reading holds (pricing page says 7+ years); confirm the first file on the first listing. Caveats in §4. | Not this month. |
+| **Indices** | $0 / $49 / $99 | **Skip** until a live use exists, then Starter $49. Reasoning in §5. | Declined. |
+| **Currencies** (forex + crypto, one product) | $0 / $49 | **Skip.** Reasoning in §5. | Declined. |
+| **Benzinga** (partner add-on) | $99/month **per dataset** | **Earnings now, News after a frozen text spec.** Open questions in §6. | **Earnings day 1; News after week 4.** |
 
 Flat-file (S3) access is **bundled into the tier**, not a separate add-on. **(verified)** Within an
 asset class the gating is by *data type*: for options, aggregates need Starter, trades need
-Developer, quotes need Advanced. **(verified)**
+Developer, quotes need Advanced. **(verified)** Stocks follows the same ladder; futures gives trades
+and top-of-book quotes together on Developer; indices has aggregates and values only; Basic has no
+flat files on stocks, options, futures or indices. **(verified)**
+
+**Conflict note.** The pricing page labels Options Advanced "5+ Years" and Futures Advanced "7+
+Years" where the docs say all history from 2014-06-02 and 2017-04-03, and the landing pages show
+other start dates (stocks 2003-09-01, options 2014-07-18, futures 2017-05-13, indices 2023-03-09).
+**(verified)** If the pricing labels are what a subscription delivers, the Advanced tiers are
+windows too and waiting loses the oldest data, so the "no deadline" conclusions for options and
+futures hold only on the docs' reading. **(estimate)** Confirm the first available file on the first
+listing before relying on it.
+
+### Stocks comes first
+
+Every lake, the universe and every study stop at **2025-08-13**: the last flat file on disk is
+`~/local/flatfiles/{day,minute}_aggs_v1/2025/08/2025-08-13.csv.gz`, and the day, adjusted-day and
+minute lakes under `~/local/parquet_lake` end in 2025-08 — about 13.7 months before 2026-10-05.
+Options and earnings work also need underlying prices for the same dates (implied volatility needs
+the underlying; an event study needs returns around every announcement), so they inherit the gap.
+
+- **Catching up reuses existing code unchanged:** `poly bars --layout market` on the new files, then
+  the adjusted-lake build (README Steps 3 and 5), then the Step 2 point-in-time universe. The Step 4
+  reference-data pull also needs a re-run for splits and dividends after 2025-08-13. **(estimate)**
+- **The plan's precondition is already met.** The owner's plan reads the refreshed lake only once
+  "the pipeline's September review findings, a total-return factor inverted among them" are closed.
+  All five findings of that 2026-09-15 review are closed in this repository: the inverted
+  total-return factor and the raw dividend divided by a split-adjusted base (PR #1, known-answer tests
+  in `tests/test_adjustments.py`), UTC instead of ET date partitioning (PR #1), the missing FIGI and
+  ticker-event stitching (holder ids, `pull_ticker_events`), and the survivorship-biased universe
+  (the point-in-time `universes/top1000_cs_monthly`).
+- **Tier.** The minimum tier whose flat-file history covers 2025-08-14 to the present is **Starter
+  ($29)**: day and minute aggregates, 5 years. **(verified)** Five years reach back to about 2021-10,
+  well before the gap opens. **(estimate)** Add
+  the **Financials & Ratios** add-on ($29, also included in Advanced) **(verified)** and the Stocks
+  line is **$58/month**, the owner's plan default. Massive's own pages disagree on whether that
+  add-on is sold without a Stocks subscription (pricing page: yes; knowledge-base article: it extends
+  one you hold) **(verified)** — moot when Starter is the base plan.
+- **A higher tier only when trades or quotes work exists.** Trades need Developer ($79, 10 years);
+  quotes need Advanced ($199, all history from 2003-09-10). **(verified)** The plan holds that work
+  (primary-exchange close, adverse selection) behind an open question, so no month-one work needs
+  either.
+- **Does the account already hold Stocks Advanced?** The plan says "Keep Advanced", and the
+  2026-09-15 tier note says "keep Stocks Advanced"; both read as if Advanced were live. The
+  observations below point the other way. The dashboard settles it on day 1. If Advanced is live,
+  the refresh needs no purchase at all, and moving down to Starter gives up re-downloading files
+  older than about 2021-10, which would then exist only on local disk. **(estimate)**
+- **Financials are REST, not flat files, and `filing_date` is not a point-in-time date.**
+  Statements run from 2009-03-29 with `period_end` and `filing_date`. **(verified)** The docs
+  define `filing_date` as the most recent SEC filing that included the period's data, "not
+  necessarily the date this period was originally filed": a 10-K restates three years, so a
+  quarter's record carries the date of the latest filing that repeated it, and the values are
+  the restated ones. **(verified)** Keyed on `filing_date`, a backtest sees each quarter late;
+  keyed on `period_end` plus a lag, it sees restated values early. The original filing date
+  comes from the EDGAR filings index (`/stocks/filings/vX/index`); nothing documented gives the
+  values as originally reported. The ratios endpoint is current-day only, with no history: the
+  docs give it no date parameter and plan history "Not applicable". **(verified)**
+- **The 5 requests/minute limit is the Basic tier;** every paid tier on every asset class is
+  unlimited. **(verified)** It is counted per asset class, so a paid Options plan would leave stock
+  REST pulls at 5/minute. **(single source)**
 
 ### Worth checking on the account first
 
-This repository's lake holds 22 years of equity flat files, but the API key is rate-limited to 5
-requests/minute, which is the Basic-tier signature. Those two facts do not sit together — either the
-plan was downgraded after the bulk download, or the entitlement differs from what the tier implies.
-Resolve this before buying, because it changes what the stocks line needs to be.
+Three observations about this account that the tier grid does not explain together:
+
+- The lake holds 22 years of equity flat files, ending 2025-08-13 (paths above). Only Stocks
+  Advanced reaches back to 2003-09-10; Developer reaches 10 years. **(verified)**
+- The API key in the repo `.env` was rate-limited to 5 requests/minute during the September
+  reference-data pulls, which call stock endpoints (recorded 2026-09-17). **(single source)** That
+  is the Basic signature, and Basic includes no flat files at all. **(verified)**
+- A call to `/v3/snapshot/options/AAPL` with the same key returned `403 NOT_AUTHORIZED` on
+  2026-09-21. **(single source)** It fits an account with no Options entitlement: the snapshot
+  endpoints are not included on Options Basic. **(verified)**
+
+A plausible explanation is that a paid plan, presumably Advanced as the only tier reaching 2003,
+lapsed around August 2025, after the bulk download — which would also explain why the files stop on
+2025-08-13. **(estimate)** Competing explanations fit the same facts: a different key from the one
+used for the download, a download made during a trial or on another account, or tier depths that
+differed at download time. The dashboard and billing history settle it; check them before buying
+anything, since a live Advanced plan changes the day-1 purchase.
 
 ---
 
@@ -75,8 +169,9 @@ Scaling constants measured from this repository's own lakes, for converting a ro
 Two consequences. Parquet here is **larger** than the gzipped CSV it came from (98.6 vs 75.2 GB), so
 keeping both costs ~1.8×. And adjustment roughly quadruples per-row cost (14 → 56 bytes/row).
 
-**Recommendation: buy Advanced for the history depth, ingest aggregates and trades, and do not
-mirror quotes.** Pull quotes for a specific study, into scratch space, and delete them after.
+**Recommendation, when options work starts: buy Advanced for the history depth, ingest aggregates and
+trades, and do not mirror quotes.** Pull quotes for a specific study, into scratch space, and delete
+them after.
 
 ---
 
@@ -156,12 +251,69 @@ Each contract is its own instrument with its own terms. A split changes *which c
 the price of a continuing one, so there is no split-adjusted series to construct and `factor_builder`
 does not apply.
 
-### Time-sensitive: greeks, IV and open interest cannot be backfilled
+### Greeks and IV can be derived later, per study; open interest cannot
 
-Greeks, implied volatility and open interest appear **only** on the three snapshot endpoints, as an
-on-demand calculation with no historical series and no backfill offered. **(verified)** Every day
-without a stored snapshot is a day of that history that cannot later be bought. If those series
-matter, the collector should start **before** the ingestion work, not after.
+Greeks, implied volatility and open interest appear **only** on the three snapshot endpoints (chain,
+single contract, unified): `greeks` (delta, gamma, theta and vega only **(single source)**),
+`implied_volatility` and `open_interest`. None of the four flat-file datasets, the aggregates
+endpoints or `/v3/reference/options/contracts` carries any of them. The snapshots take no as-of date
+and have no plan history, and the docs index lists no historical endpoint for any of the three — an
+absence in the documentation, not a test against the live API. **(verified)** The pricing card's
+"Daily open interest" bullet is backed in the docs only by the snapshot's latest value, not by a
+history.
+
+**Greeks and IV need no stored snapshots.** They can be computed later from historical option prices
+plus underlying prices, rates and dividends. **(estimate)** The caveats decide how good the result is:
+
+- **Price source.** Clean IV needs synchronous bid/ask midpoints, which exist only in the quotes
+  flat files (Advanced, from 2022-03-07), and §2 says never to mirror those. So "derivable later"
+  means one of two things: per study, from quotes pulled into scratch space (§2) rather than a
+  lake-wide mirror; or approximately, from the day and minute aggregates this plan does store. Those
+  are trade-based, asynchronous with the underlying and thin on illiquid strikes, so IV backed out of
+  them is noisy; before 2022-03-07 they are all that exists. **(estimate)**
+- **American exercise.** Single-stock options are American-exercise, so Black-Scholes is the wrong
+  model for them; use a binomial tree or Barone-Adesi–Whaley. Massive's own snapshot greeks come from
+  a Cox-Ross-Rubinstein binomial model on the bid/ask midpoint, and the contract master carries an
+  `exercise_style` field. **(single source)**
+- **Dividends and the forward.** An implied forward from put-call parity (same expiry) avoids needing
+  a dividend forecast, or, for index options, the index level. Parity is exact only for European
+  options, such as SPX-style index options; for American single-stock options it holds only as an
+  inequality, so the implied forward is a bounded approximation, biased where Black-Scholes is
+  already wrong (dividend payers, deep in-the-money puts). **(estimate)** Rates and dividends come
+  from outside the options product; this pipeline's reference-data step already pulls dividends, but
+  those are realized, ex-post amounts, not the ex-ante yield Massive uses. That is fine for ex-post
+  greeks but a look-ahead if used as the market's expectation. **(estimate)**
+
+**What `mcp_massive` ships** (read from source at commit `c58ec7e`, 2026-05-05 **(single source)**):
+eleven closed-form **Black-Scholes** functions — price, delta, gamma, theta, vega, rho, vanna,
+volga, charm, veta and color — callable through the `apply` parameter of its `call_api` and
+`query_data` tools (its README lists only six). Each takes spot, strike, time to expiry in years,
+a rate and **a volatility you supply**, so it computes greeks *given* an IV. There is **no IV
+solver** (no root-finder, no scipy dependency), **no dividend-yield input** (charm, veta and color
+state they assume none; the others have no such parameter) and **no American-exercise handling**. It
+cannot turn a price into an IV, and for American options it is the wrong model; it does not replace
+the derivation above.
+
+**Open interest cannot be derived from prices.** **(estimate)** Within Massive it exists only in the
+snapshot, as the quantity held at the end of the last trading day, so a history is only what was
+snapshotted on the day. Every day without a stored snapshot is a day of Massive-sourced open
+interest that cannot later be bought. **Options Starter ($29)** is the first tier with the snapshot
+endpoints — 15-minute delayed on Starter and Developer, real-time only on Advanced, whatever the
+pricing card's "Real-time Greeks and IV" bullet implies **(verified)** — so the collector needs only
+Starter and is **decoupled from the archive purchase**. This key could not call the snapshot on
+2026-09-21 (§1). Start it before the ingestion work only *if open interest history is wanted from
+Massive*.
+
+The collector is a small service, not a script: a daily history means one paginated chain snapshot
+per live underlying (up to ~5,000, the all-history count above) every trading day, with storage and
+the same incremental-state REST pattern as Benzinga (§6, §7 phase 1). Starter's unlimited request
+rate makes it feasible. **(estimate)**
+
+Other vendors sell historical end-of-day open interest: Cboe DataShop's Option EOD Summary (from
+January 2012, with IV and greeks as an optional add-on), OptionMetrics IvyDB US (from 1996,
+institutional) and ORATS (from 2007; its open interest is the prior night's OCC figure).
+**(single source)** Prices were not checked. The urgency above therefore holds only if Massive is to
+be the open-interest source.
 
 ---
 
@@ -169,11 +321,23 @@ matter, the collector should start **before** the ingestion work, not after.
 
 - Four exchanges (CME, CBOT, COMEX, NYMEX), each with minute aggregates, session aggregates, quotes
   and trades. **(verified)**
+- **Cboe's VX futures (CFE) do not appear in Massive's coverage**, which lists four CME Group
+  exchanges only. No Massive page names CFE or VX, so this is not an explicit exclusion.
+  **(estimate)**
 - Minute aggregates carry `session_end_date`, `exchange` and `dollar_volume` — so **the vendor has
   already solved the 23-hour-session date problem**; this pipeline does not need to invent a session
   rule, only to stop using the equity ET-calendar-date rule, which would silently misfile a Sunday
   evening open. **(verified)**
-- History from **2017-04-03**. **(verified)**
+- History from **2017-04-03**. **(verified)** On the docs' all-history reading that is a fixed
+  start, so **there is no deadline**: waiting loses nothing on Advanced, whereas a Developer window
+  sheds its oldest day each day. If the pricing page's "7+ Years" label is what Advanced delivers, it
+  is a window too and waiting does lose the oldest data (§1 conflict note); confirm the first file
+  on the first listing. **(estimate)**
+- **Tier: Advanced $199 for the full history.** Starter ($29) has minute and session aggregates only,
+  2 years. Developer ($79) adds trades and top-of-book quotes but is a **5-year** window. Only
+  Advanced has all history from 2017-04-03. **(verified)** Today the Developer window reaches back
+  to about 2021-10. **(estimate)** An earlier draft of this document recommended Developer; that
+  missed the window.
 - **No open interest anywhere in the product.** **(verified)** A real gap: OI drives roll timing and
   positioning work.
 - Settlement prices only on session-and-longer candles, not intraday. **(verified)**
@@ -188,13 +352,26 @@ matter, the collector should start **before** the ingestion work, not after.
 
 ## 5. Indices, forex and crypto
 
-**Indices.** ~13,335 tickers from Nasdaq, Cboe and CME. `I:SPX`, `I:DJI` and `I:VIX` require a paid
-tier; `I:NDX` and the Nasdaq Composite are free. **(verified)** Day and minute aggregates carry no
-volume or transactions columns — which this pipeline already tolerates, since `usecols` is built from
-the header. The decisive limitation: **history starts 2023-02-14 even on the "all history" tier**,
-shallower than the pricing page's "1+ Year Historical Data" language implies. **(verified)** For a
-2003–2025 backtest, an index series beginning in 2023 is not a usable benchmark; SPY/IVV in the
-existing equity lake give 22 years instead. Buy it for forward-looking work.
+**Indices — skip until a live use exists.** ~13,335 tickers from Nasdaq, Cboe and CME. `I:SPX`,
+`I:DJI` and `I:VIX` require a paid tier; `I:NDX` and the Nasdaq Composite are free. **(verified)** Day
+and minute aggregates carry no volume or transactions columns — which this pipeline already
+tolerates, since `usecols` is built from the header. Four reasons not to buy now:
+
+1. **History starts 2023-02-14 on every tier**, flat files included on Starter ($49) and Advanced
+   ($99) alike. **(verified)** The pricing page's "1+ Year Historical Data" label understates this
+   (about 3.6 years today), but for a 2003–2025 backtest an index series beginning in 2023 is still
+   not a usable benchmark.
+2. **SPY/IVV in the existing equity lake give 22 years** as the benchmark instead.
+3. **VIX daily history is free.** Cboe's VIX history CSV (open, high, low, close) and FRED's
+   `VIXCLS` (close only) both begin on 1990-01-02, and their first closes agree. **(single source)**
+   FRED carries a copyright notice (the data are Cboe's); Cboe's terms were not checked.
+4. **For European-style index options (SPX-style), the underlying level can be replaced** by the
+   implied forward from put-call parity, which is exact there (§3). **(estimate)**
+
+Free sources are daily; intraday index levels (minute aggregates) are the only index data a live use
+would need Massive for, and indices has a fixed start on every tier (2023-02-14), so by criterion
+(ii) waiting loses nothing. **(estimate)** Buy Starter ($49) when a live use exists; Advanced ($99)
+adds no depth. **(verified)**
 
 **Forex and crypto** are sold together as one "Currencies" product, $0 or $49, with no higher
 individual tier. **(verified)** Recommendation: skip.
@@ -213,9 +390,16 @@ individual tier. **(verified)** Recommendation: skip.
 
 Sold as a **partner add-on at $99/month per dataset**, six products priced separately. **(verified)**
 Consensus Ratings is bundled into Analyst Ratings rather than sold on its own. **(verified)** Whether
-a base Stocks subscription is *also* required is **unresolved** — the "no base subscription required"
-line on the pricing page belongs to a structurally different section (specialized datasets), not to
-partner data. **(verified as unresolved)**
+a base Stocks subscription is *also* required is **still unresolved on Massive's own pages** — the
+"no base subscription required" line on the pricing page belongs to the More Data section (NYSE
+Order Imbalances, European Consumer Spending), not to partner data; the knowledge base calls it a
+commercial question per dataset; the 2025 launch blog says only that an existing Massive account is
+needed; and the docs list each Benzinga dataset as its own plan row, which leans standalone.
+**(verified as unresolved)**
+Checkout needs sign-in, which neither reader did. The owner's plan reads "no base plan needed" from
+the secondary tier note, which neither reader could confirm. It is **moot for the plan**: Stocks
+Starter comes first in it, so the likeliest form of any such requirement, a Stocks plan underneath,
+would be met. **(estimate)**
 
 ### Coverage against this repository's point-in-time universe
 
@@ -267,24 +451,34 @@ addresses this either way.
 
 ### Recommendation
 
-**Not in the same round as the market-data purchase.** Options is a clean extension of machinery
-that already exists and is already trusted; Benzinga is a new ingestion pattern, new licensing, and
-two open correctness questions. Resolve these first, both cheap:
+**Earnings now, News after week 4, nothing else yet.** The owner's plan
+(`ML_Alpha_Research/strategy-lab/docs/plan-2026-09-30-month.md`) lists **Earnings ($99)** for day 1
+and **News ($99)** after its text specification is frozen in week 4; this replaces the earlier
+advice to hold Benzinga out of the first round. Earnings was already this document's better first
+purchase for event studies: structured actuals and estimates with surprise fields, 70.6% coverage,
+and no text-processing layer to build. It is still a new ingestion pattern (Blocker 1), and the two
+correctness questions are still open:
 
-1. **Does the archive cover delisted names?** Testable with a handful of REST calls against `AABA`,
-   `ABGX`, `ABFS` during a trial.
-2. **Does a historical query return the original record or the current one?** Ask support — the docs
-   are silent and it is not inferable.
+1. **Does the archive cover delisted names?** With monthly billing, **a month of Earnings is the
+   cheapest test**: a handful of REST calls against `AABA`, `ABGX` and `ABFS` in the first week.
+2. **Does a historical query return the original record or the current one?** Still needs an answer
+   from support — the docs are silent and it is not inferable. Ask in week 1; until it comes back,
+   treat the estimate and surprise fields as possibly carrying look-ahead. **(estimate)**
 
-If both come back clean, buy **one** dataset, not the suite. **News** ($99) has the deepest history
-and widest coverage. But if the real goal is event studies rather than NLP, **Earnings** is the
-better first purchase: structured actuals and estimates with surprise fields, 70.6% coverage, and no
-text-processing layer to build. Skip Analyst Insights until Massive reconciles its own two pages,
-and skip Bulls/Bears Say outright — a current snapshot cannot be backtested.
+**The owner's day-3 check** adds a third: the share of announcements carrying the `time` field,
+which decides the day-zero convention (the plan falls back to two-day windows if many lack it).
+Earnings records carry `time` as a 24-hour HH:MM:SS string labeled EST, beside `date`, `date_status`
+(projected or confirmed) and `last_updated`. The docs say nothing about how often `time` is
+populated, and "EST" is ambiguous in summer. **(single source)**
 
-Note the cost shape: at $99 *per dataset*, News + Earnings + Ratings is $297/month, comparable to
-the entire market-data stack. And the individual tier is licensed personal/non-commercial,
-"display use only". **(verified)**
+**News** ($99) has the deepest history and widest coverage, and goes second because the plan freezes
+its text specification before buying it. Skip Analyst Insights until Massive reconciles its own two
+pages, and skip Bulls/Bears Say outright — a current snapshot cannot be backtested.
+
+Note the cost shape: at $99 *per dataset*, News + Earnings + Ratings is $297/month, about five times
+the $58 day-1 Stocks line. The plan budgets $157/month from day 1 (Stocks $58, Earnings $99) and
+$256 once News is added. And the individual tier is licensed personal/non-commercial, "display use
+only". **(verified)**
 
 ---
 
@@ -292,13 +486,17 @@ the entire market-data stack. And the individual tier is licensed personal/non-c
 
 | phase | work | why here |
 |---|---|---|
-| 0 | S3 credentials; measure the aggregate prefixes; start the greeks/IV/OI snapshot collector | Sizes are unpublished, and snapshot history is unrecoverable once a day passes |
-| 1 | Fetch layer | Nothing else can run without it, and it does not exist for any asset class |
-| 2 | Options **day** aggregates end to end | Proves symbology parsing, underlying-partitioning and the contract master against small data |
-| 3 | Options **minute** aggregates | Proves scale |
-| 4 | Options **trades** | ~10 GB/year; cheap once the layout is settled |
-| 5 | Futures | Session handling and roll construction — the most genuinely new code |
-| — | Indices | Small and independent; slot in anywhere |
+| 0 | **Stocks purchase** (Starter plus Financials by default; check the account first, §1) and the **equity refresh, 2025-08-14 onward**: day and minute lakes, adjusted lake, universe. Needs S3 credentials from the dashboard | Every lake, the universe and every study end 2025-08-13; options and earnings work need underlying prices through the present; existing code, unchanged, and the September review findings the plan gates it on are closed (§1) |
+| 1 | **Financials and Benzinga Earnings ingestion** (REST) | A new pattern for this repo — paginated REST with incremental state and resume, no flat files. Ingestion does not wait on phase 0; the earnings rows use phase 0's prices if the refresh lands by 7 October, otherwise they run on the stale panel and are re-run in month two (plan Decision 2; §6) |
+| 2 | Options snapshot collector — **if open interest history is wanted from Massive** (Options Starter, $29) | Open interest is the one options series that cannot be derived or bought back from Massive; every day not snapshotted is lost. Greeks and IV are not (§3). A small service, not a script: one paginated chain call per underlying per day, with phase 1's incremental-state REST pattern. Independent of the phases below |
+| 3 | When options work starts: Advanced; measure the aggregate prefixes | Sizes are unpublished; nothing forces the purchase earlier on the docs' all-history reading (§1) |
+| 4 | Fetch layer | Options and futures cannot run without it, and it does not exist for any asset class; phase 0's catch-up is a one-off pull by hand (README Step 1) |
+| 5 | Options **day** aggregates end to end | Proves symbology parsing, underlying-partitioning and the contract master against small data |
+| 6 | Options **minute** aggregates | Proves scale |
+| 7 | Options **trades** | ~10 GB/year; cheap once the layout is settled |
+| 8 | Futures (Advanced) | No deadline on the docs' all-history reading (§1, §4). Session handling and roll construction — the most genuinely new code |
+| — | Benzinga News | Same REST client as phase 1; after the plan's text specification is frozen (week 4) (§6) |
+| — | Indices | **Skip until a live use exists** (§5) |
 | — | Options **quotes** | Never mirrored. Pull per study, into scratch, and delete |
 
 ## 8. The architectural decision
