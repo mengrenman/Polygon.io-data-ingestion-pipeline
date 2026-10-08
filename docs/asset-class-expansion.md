@@ -11,7 +11,8 @@ Massive's docs on 2026-10-05 corrected the futures tier and the indices depth wo
 
 *Revised 2026-10-09: the joint purchase recommendation agreed with the strategy-lab session (below);
 the account is Basic on every asset class, read from the dashboard, so the day-1 purchase is needed (§1);
-Massive's license terms on deleting data, and a probe showing Basic's reference history cap is not enforced (§1); per-day options quote sizes from the vendor's file browser (§2); a
+Massive's license terms on deleting data, and a probe showing Basic's reference history cap is not enforced (§1);
+the joint vendor recommendation agreed with the strategy-lab session (below); per-day options quote sizes from the vendor's file browser (§2); a
 2022-onward IV pilot from Massive's own quotes (§3); the live futures venue list (§4).*
 
 **Status: a plan, not implemented.** Nothing in this repository ingests options, futures or indices
@@ -101,6 +102,93 @@ with periods ending on or after 2009-06-15, and all U.S. public companies by Dec
 release 2008-300). **(verified)** Massive's statements start 2009-03-29. So the month-one
 comparison should stratify by company size and year, and for 2009-2011 small and mid caps SEC has
 no first-reported values: a fundamentals panel would need Massive there, or start in 2011 for them.
+
+---
+
+## Joint vendor recommendation (2026-10-09)
+
+Recorded verbatim, as agreed with the strategy-lab session, which records the same text beside the
+purchase recommendation in `ML_Alpha_Research/strategy-lab/docs/plan-2026-09-30-month.md`. The
+pipeline side's evidence is its engineering report on data vendors (2026-10-09) and section 1 below.
+
+Joint recommendation on data vendors, agreed by the strategy-lab and pipeline sessions on
+2026-10-09. From the strategy-lab side's requirements and vendor research and the pipeline side's
+engineering report (both read-only, public pages, 2026-10-05 and 2026-10-09; prices as shown on
+those dates).
+
+1. **Derivatives are later, not now.** No scheduled row at 1, 3 or 12 months needs options, futures,
+   indices or currencies; 12.5 of the plan's 13.0 build days need only the Stocks lake. The undated
+   families that would: futures time-series momentum and carry (need 2008 in sample; Massive starts
+   2017, CME group only, no VX) and option-implied factors with the owner's volatility-surface
+   direction (need implied-volatility and open-interest history over three eras; Massive sells
+   neither). VIX is free from Cboe and FRED.
+2. **Massive stays the equities source.** It is the only source read that meets the lake's whole
+   contract: consolidated bars from 2003-09-10, as-traded case-coded symbols (4,041 lowercase share
+   classes, 5.32% of day rows, found nowhere else), FIGI and CIK, delisting dates, splits, dividends
+   and ticker events. Leaving it costs identity and reference data, not bars: a per-session
+   transposer (6 to 9 engineer-days, estimated), new identifier logic, a second repair audit, and
+   the loss of a like-for-like basis for the registry's recorded rows.
+3. **Licensing is the gate, and it is the owner's question to Massive.** Massive's Market Data Terms
+   (page last updated 2025-08-28, read 2026-10-09) say: on termination, restriction or suspension of
+   the account, cease use and delete all Market Data; data is for display use by default; no
+   non-display use or derivative works unless licensed. Whether a downgrade is a restriction,
+   whether research backtesting is non-display use, and where the 22 years of files on disk came
+   from are unanswered. Before any rebuild, the owner (a) reads the account's billing history on the
+   dashboard (Manage Billing), and (b) asks Massive in writing: is research backtesting permitted
+   under an individual plan; may data downloaded under a plan be kept after a downgrade or
+   cancellation; and are adjusted datasets and research outputs derived from Market Data
+   "derivative works" under section 5(d)? Neither session reads the terms as a lawyer; the answer
+   comes from Massive. Until it comes, neither session copies the on-disk files off this machine,
+   shares or publishes them or anything derived from them, or starts a new lake build from them.
+   Whether research use of the existing lakes continues meanwhile is the owner's decision, stated
+   explicitly.
+4. **A keepable bar copy is insurance, not a replacement, and not now.** By published terms only
+   Kibot (delivered data kept permanently; download access one year), Portara (perpetual) and
+   FirstRate (FAQ: perpetual; links die without a subscription) let downloaded data be kept; none
+   supplies FIGI, CIK, delisting dates or case-coded classes. If Massive's answer on retention is
+   no: FirstRate Stocks Complete first (SGD 721.95 as displayed; at most 16,138 symbols against the
+   lake's 33,833; capture in the first month), then Kibot Essentials ($990; delisted coverage to be
+   confirmed in writing). Default: wait for Massive's answer.
+5. **Rented reference and cross-checks, each gated on a result.** Sharadar Bundle ($499 a year;
+   permaticker, ticker changes, point-in-time fundamentals from 1998; delete within 30 days of
+   termination, derived outputs keepable) only if the week-3 fundamentals rows pass their
+   measurement. Norgate Platinum ($630 a year; historical index constituents; Windows only; delete
+   on expiry) only if a strategy needs index membership. Tiingo is excluded (its validation clause
+   taints any dataset checked against it); IQFeed, Intrinio as a price mirror, Alpaca beyond a
+   sample and Barchart are not worth building.
+6. **Derivatives sources when a specification exists.** Options: ORATS near end-of-day ($599
+   one-time, 2007 to present, implied volatility, Greeks, open interest; 14-day S3 window and symbol
+   join still to be designed). Futures: Norgate Futures ($270 a year, history to about 1980, Windows
+   only, delete on expiry) or FirstRate Most Active (keepable intraday) with Databento GLBX
+   statistics for open interest and settlement, plus Cboe's free VX files. Indices and volatility:
+   Cboe's free CSVs; FRED series are read but not persisted until FRED's terms are settled. FX: FRED
+   H.10 and free minute sources; Massive Currencies not needed.
+7. **Day-1 purchase unchanged, with the question first.** Stocks Starter $29, Financials $29 for one
+   month of measurement, Benzinga Earnings $99; $157 a month, monthly billing. The licensing
+   question in point 3 costs nothing and goes first. Settled by the pipeline's probe on 2026-10-09
+   (current Basic key): the v3 splits and dividends endpoints return full history (splits from
+   1978-10-25, dividends from 2000-08-15), and the tickers endpoint's date parameter returned the
+   point-in-time holder for the one ticker tested (ABX on 2010-01-04 resolved to Barrick, FIGI
+   BBG000BB07P9). So the reference re-pull can run on Basic before any purchase. The reused-symbol
+   fix's rebuild of the security master and adjusted lake follows point 3's gate, and its first step
+   tests the date lookup across all affected tickers.
+8. **Lineage.** The registry holds 721 rows, 607 at data_version 4ac0ad6f0d9b. Any refresh or
+   rebuild makes them historical, since the fingerprint hashes five lake roots by size and mtime and
+   cannot name a vendor. Before any rebuild: the frozen copy of day_adj and refdata (the data
+   contract's section 5 step), build beside, verify, swap, prior build kept. A second vendor's lake
+   is a full parallel tree under STRATEGY_LAB_PARQUET_LAKE, never inside the fingerprinted roots; the
+   vendor is recorded in the per-dataset build manifest the data contract proposes (name and format
+   to be settled in the contract) and as a registry tag; cross-lake comparisons use a separate
+   comparer keyed on params_hash with identical code.
+9. **Not claimed or corrected.** The 5 requests a minute limit was never observed; the September
+   pull was client-paced. The v3 splits and dividends endpoints are marked deprecated with no date
+   or replacement. Kibot's delisted coverage and FirstRate's symbol count are unconfirmed. ORATS
+   delivery and the Norgate Windows feed design are follow-ups, not done, and ORATS was not in the
+   pipeline's vendor run. Massive's terms as they apply to us are unanswered. Tiingo's and
+   Intrinio's terms changed in September and October 2026 and must be re-read before any use.
+   Databento's XNAS.ITCH changes retroactively on 2026-10-31. The point-in-time holder lookup was
+   tested on one ticker. The documented 2-year Basic history cap was not enforced on the v3
+   reference endpoints on 2026-10-09 but may be enforced later.
 
 ---
 
