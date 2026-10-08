@@ -460,6 +460,10 @@ def _assign_event_ids(events: pd.DataFrame, sm: pd.DataFrame, date_cols) -> pd.D
     """
     Add 'holder_id' to a splits/dividends table by (ticker, event date), so corporate actions are keyed
     exactly like price rows (Polygon's splits/dividends endpoints carry a ticker but no FIGI).
+
+    A `refile_holder_id` (written by the refdata derive with --holder-lines) wins where present: it is the
+    company the action was re-filed to, which (ticker, date) cannot always express. Randgold's final dividend
+    went ex on 2019-01-02, the day Barrick took GOLD; by (ticker, date) it would land on Barrick's line.
     """
     e = events.copy()
     if "ticker" not in e.columns and "T" in e.columns:
@@ -472,6 +476,10 @@ def _assign_event_ids(events: pd.DataFrame, sm: pd.DataFrame, date_cols) -> pd.D
         raise ValueError(f"events table has none of the date columns {list(date_cols)}")
     e["ticker"] = _norm_ticker(e["ticker"])
     e["holder_id"] = _assign_holder_ids(e, sm, dcol)
+    if "refile_holder_id" in e.columns:
+        pre = e["refile_holder_id"].astype(object)
+        known = pre.notna() & (pre.astype(str).str.strip() != "")
+        e.loc[known, "holder_id"] = pre[known].astype(str)
     return e
 
 

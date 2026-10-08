@@ -1,0 +1,417 @@
+ticker,start,end,rows,current_id,master_name,true_name,true_cik,master_is_true_holder,member_months,first_member_month,last_member_month,n_div_applied,div_applied_logpct,n_div_own_symbol,n_div_via_holder_id,div_via_holder_id_logpct,n_split_days,n_split_via_holder_id,split_via_holder_id_dates,successor_by_price_only
+FISV,2003-09-10,2023-06-06,4969,BBG000BJKPG0,"Fiserv, Inc. Common Stock",Fiserv Inc,0000798354,True,235,2003-11-28,2023-05-31,0,0.0,0,0,0.0,2,0,,
+GOLD,2003-09-10,2025-05-08,5450,BBG005ZVDK48,"Gold.com, Inc.",Barrick Gold Corp.,0000756894,False,206,2008-01-31,2025-04-30,115,-128.58,88,29,-50.24,4,1,2022-06-07,B
+BBT,2003-09-10,2019-12-06,4090,BBG000BB00D7,Beacon Financial Corporation,BB&T Corporation,0000092230,False,193,2003-11-28,2019-11-29,86,-68.1,29,57,-34.18,0,0,,TFC
+APC,2003-09-10,2019-08-08,4006,BBG01Z6HN5H2,ARKO Petroleum Corp. Class A Common Stock,Anadarko Petroleum,0000773910,False,189,2003-11-28,2019-07-31,62,-13.16,62,0,0.0,1,0,,
+ABX,2003-09-10,2018-12-31,3854,BBG00VY1KB95,"Abacus Global Management, Inc.",Barrick Gold,0000756894,False,182,2003-11-28,2018-12-31,0,0.0,0,0,0.0,0,0,,GOLD
+BID,2003-09-10,2019-10-02,4044,CIK__0002094919,Tribeca Strategic Acquisition Corp. Class A Ordinary Shares,Sotheby's,0000823094,False,105,2006-05-31,2019-08-30,38,-22.92,38,0,0.0,0,0,,
+VIP,2003-09-10,2017-03-30,3410,BBG00ZR8BTP2,Vulcan Infrastructure and Power Inc. Class A Common Stock,VimpelCom Ltd.,0001023977,False,103,2003-11-28,2013-12-31,6,-26.81,7,0,0.0,1,1,2013-06-19,VEON
+P,2011-06-15,2019-01-31,1920,BBG00212PVZ5,"Everpure, Inc.",Pandora Media Inc,0001230276,False,84,2011-08-31,2019-01-31,0,0.0,0,0,0.0,0,0,,
+SGP,2003-09-10,2009-11-03,1550,BBG01HDDMDS5,"SpyGlass Pharma, Inc. Common Stock",SCHERING PLOUGH CORP,0000310158,False,72,2003-11-28,2009-10-30,24,-6.83,24,0,0.0,0,0,,
+MICC,2003-09-10,2011-05-27,1944,CIK__0002071668,The Magnum Ice Cream Company N.V.,MILLICOM INTL CELLULAR SA,0000912958,False,62,2004-04-30,2011-05-31,0,0.0,0,0,0.0,0,0,,
+PMI,2003-09-10,2011-10-28,2047,BBG000TR9Y22,"Picard Medical, Inc.",PMI GROUP INC (THE),0000935724,False,61,2003-11-28,2010-12-31,21,-3.04,21,0,0.0,0,0,,
+NHP,2003-09-10,2011-07-01,1968,BBG021RVZ035,"National Healthcare Properties, Inc. Class A Common Stock",NATIONWIDE HEALTH PROPERTIES,0000780053,False,51,2007-03-30,2011-06-30,30,-45.54,30,0,0.0,0,0,,
+Q,2013-05-09,2017-11-14,1140,BBG01TRL73S5,"Qnity Electronics, Inc.","Quintiles IMS Holdings, Inc",0001478242,False,41,2013-07-31,2017-10-31,0,0.0,0,0,0.0,0,0,,IQV
+ACH,2003-09-10,2022-09-01,4763,BBG000CTV5F0,"Accendra Health, Inc.",Alum Corp of China Limited,0001161611,False,35,2003-12-31,2010-03-31,82,-101.29,11,72,-72.98,2,1,2010-04-01,
+HOS,2004-03-26,2019-12-20,3963,BBG000J7Q1L9,"Hornbeck Offshore Services, Inc.","Hornbeck Offshore Services, Inc.",0000354359,False,28,2007-01-31,2014-01-31,0,0.0,0,0,0.0,0,0,,
+ITG,2003-09-10,2019-02-28,3894,BBG00271QZH1,"ITG, Inc. Class A Common Stock",Investment Technology Group Inc,0000920424,False,22,2006-01-31,2008-07-31,16,-5.41,16,0,0.0,0,0,,
+MAKO,2008-02-14,2013-12-16,1471,BBG000TW74W6,Mako Mining Corp Common Stock,MAKO SURGICAL CORP COM,0001324691,False,19,2011-06-30,2013-11-29,0,0.0,0,0,0.0,0,0,,
+BOT,2005-10-19,2007-07-12,434,BBG01XB0FY02,"RoboStrategy, Inc. Common Stock","CBOT HOLDINGS, INC. CL-A COM STK",,False,19,2005-12-30,2007-06-29,0,0.0,0,0,0.0,0,0,,
+BEBE,2003-09-10,2017-12-15,3593,CIK__0002079933,TGE Value Creative Solutions Corp,Bebe Stores Inc,0001059272,False,17,2004-12-31,2007-01-31,42,-32.59,42,0,0.0,4,0,,
+PS,2018-05-17,2021-04-05,725,BBG01N5GDY62,Pershing Square Inc.,"Pluralsight, Inc. Class A Common Stock",0001725579,False,10,2019-03-29,2021-02-26,0,0.0,0,0,0.0,0,0,,
+CCXI,2012-02-08,2022-10-19,2692,CIK__0002074973,Churchill Capital Corp XI Class A Ordinary Shares,"ChemoCentryx, Inc.",0001340652,False,8,2020-01-31,2022-09-30,0,0.0,0,0,0.0,0,0,,
+NGEN,2003-09-10,2009-03-20,1392,BBG00NQ5C032,NervGen Pharma Corp. Common stock,NANOGEN INC,0001030339,False,6,2003-12-31,2004-05-28,0,0.0,0,0,0.0,0,0,,
+HAWK,2013-04-19,2018-06-14,1299,BBG00FDMGFF6,"HawkEye 360, Inc.","Blackhawk Network Holdings, Inc. Common Stock",0001411488,False,6,2017-12-29,2018-05-31,0,0.0,0,0,0.0,0,0,,
+TII,2008-06-11,2010-08-25,557,BBG00LG3ZMR3,Titan Mining Corporation,TELMEX INTERNACIONAL S A B DE CV ADS (REP 20 SER L SHS),0001436223,False,6,2010-01-29,2010-06-30,4,-4.48,4,0,0.0,0,0,,
+SVA,2004-12-08,2019-02-22,3576,CIK__0001084201,"Sinovac Biotech, Ltd","Sinovac Biotech, Ltd",0001084201,True,3,2009-09-30,2009-11-30,0,0.0,0,0,0.0,0,0,,
+CBK,2003-09-10,2019-04-17,3928,BBG000FVM009,"Commercial Bancgroup, Inc. Common Stock",Christopher & Banks Corporation,0000883943,False,2,2003-11-28,2003-12-31,32,-19.09,32,0,0.0,0,0,,TMCXW
+CCC,2018-10-29,2021-01-29,561,BBG00WNSJM49,CCC Intelligent Solutions Holdings Inc. Common Stock,Clarivate Plc,0001764046,False,2,2020-02-28,2020-08-31,0,0.0,0,0,0.0,0,0,,
+LIFE,2015-05-07,2024-06-04,2285,BBG00L538636,Ethos Technologies Inc. Class A Common Stock,"aTyr Pharma, Inc. Common Stock",0001339970,False,1,2021-10-29,2021-10-29,0,0.0,0,0,0.0,1,0,,
+ETS,2003-09-10,2006-03-01,623,BBG01TV7D2Q8,Elite Express Holding Inc. Class A Common Stock,"ENTERASYS NETWORKS, INC. (NEW)",0000846909,False,1,2003-11-28,2003-11-28,0,0.0,0,0,0.0,1,0,,
+SEV,2021-11-17,2023-07-20,419,BBG01X72RVT5,Aptera Motors Corp. Class B Common Stock,Sono Group N.V. Common Shares,0001840416,False,1,2022-01-31,2022-01-31,0,0.0,0,0,0.0,0,0,,
+PTN,2003-09-10,2025-05-07,5449,BBG000BN9PY4,"Palatin Technologies, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,2,0,,
+CIR,2003-09-10,2023-10-17,5061,BBG023174S53,Corgi CRCL 2x Daily ETF,,,,0,,,56,-5.95,56,0,0.0,0,0,,
+INT,2003-09-10,2023-06-15,4976,BBG023135TJ4,Corgi INTC 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+VIVO,2003-09-10,2023-01-30,4881,CIK__0001681348,VivoPower PLC Class A Ordinary Shares,,,,0,,,62,-71.89,62,0,0.0,2,0,,
+CRY,2003-09-10,2022-01-21,4625,BBG021RX4P85,GraniteShares YieldBOOST CRCL ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MRLN,2003-11-12,2022-01-19,4575,BBG01R1Y9TJ0,"Merlin, Inc. Common Stock",,,,0,,,43,-48.49,43,0,0.0,0,0,,
+TOT,2003-09-10,2021-06-10,4469,BBG01WZQ2RY3,LionShares U.S. Equity Total Return ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MIC,2004-12-16,2022-07-20,4428,BBG02316M8B2,Corgi MU 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+NP,2004-12-01,2022-07-05,4428,BBG01X1D5ZD9,Neptune Insurance Holdings Inc.,,,,0,,,70,-41.18,70,0,0.0,0,0,,
+UN,2003-09-10,2020-11-27,4336,BBG0230L2LS5,Corgi UNH 2x Daily ETF,,,,0,,,57,-61.55,58,0,0.0,1,0,,
+AVX,2003-09-10,2020-03-27,4166,BBG00YLW2WR9,Avax One Technology Ltd. Common Shares,,,,0,,,65,-33.56,65,0,0.0,0,0,,
+NYNY,2003-09-10,2019-11-15,4048,BBG0222XNDG7,Corgi NYC Based ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,TRNE
+ULTI,2003-09-10,2019-05-02,3938,BBG01Y8KS1M4,REX IncomeMax Option Strategy ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DOO,2006-06-16,2022-01-14,3924,BBG004TPGP47,BRP Inc. Common Subordinate Voting Shares,,,,0,,,19,-21.63,8,11,-2.35,0,0,,AIVI
+NFX,2003-09-10,2019-02-13,3884,BBG023131C69,Corgi NFLX 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+REED,2007-11-27,2023-02-15,3827,BBG000PFYR56,"Reed's, Inc.",,,,0,,,0,0.0,0,0,0.0,1,0,,
+WR,2003-09-10,2018-06-04,3709,BBG0223FCT81,Corgi U.S. War Machine ETF,,,,0,,,59,-63.44,59,0,0.0,0,0,,
+PCLN,2003-09-10,2018-02-26,3641,BBG01XSWKWM8,Pictet Cleaner Planet ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,BKNG
+CLUB,2006-06-02,2020-09-23,3603,BBG0222LF8M6,Billionaires Club ETF,,,,0,,,4,-33.02,4,0,0.0,0,0,,
+SPLS,2003-09-10,2017-09-12,3527,BBG01ZHG3J20,PIMCO US Stocks PLUS Active Bond Exchange-Traded Fund,,,,0,,,39,-32.85,39,0,0.0,1,0,,
+GSOL,2003-09-10,2017-08-28,3494,BBG01G6XXXN0,Grayscale Solana Staking ETF Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FAC,2004-05-03,2018-04-06,3460,BBG01SQC0LF9,Factorial Energy Inc. Class A Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DRAM,2003-09-10,2017-06-23,3444,BBG021DJBSP8,Roundhill Memory ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ARIA,2003-09-10,2017-02-15,3383,BBG023MH4LP1,Aria Opportunities ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ARCI,2006-02-22,2019-09-10,3329,CIK__0002083910,Archimedes Tech SPAC Partners III Co. Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,JAN
+MHY,2003-09-10,2016-08-26,3265,BBG01X5934V5,Man Active High Yield ETF,,,,0,,,98,-74.38,98,0,0.0,0,0,,
+SSS,2003-09-10,2016-08-12,3255,BBG01ZY19984,CYBER HORNET S&P 500 and Solana 75/25 Strategy ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,LSI
+IND,2003-09-10,2016-08-11,3254,BBG01YPKHBN4,Xtrackers Nifty 500 India ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TAXI,2003-09-10,2016-05-10,3189,BBG01WN0XGQ2,Northern Trust Intermediate Tax-Exempt Bond ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+NPT,2003-09-10,2016-04-08,3167,CIK__0002014337,Texxon Holding Limited Ordinary shares,,,,0,,,93,-50.3,96,0,0.0,0,0,,
+CAM,2003-09-10,2016-04-01,3162,BBG01XHF5KW9,AB California Intermediate Municipal ETF,,,,0,,,0,0.0,0,0,0.0,2,0,,
+POM,2003-09-10,2016-03-23,3156,BBG01SVDF9S8,POMDOCTOR LIMITED American Depositary Shares,,,,0,,,48,-61.74,48,0,0.0,0,0,,
+DSCO,2003-09-10,2016-04-18,3153,BBG01ZNCTKD9,DoubleLine Securitized Credit ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+MGN,2004-03-24,2016-09-13,3141,CIK__0001995075,Megan Holdings Limited Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ECHO,2009-10-02,2021-11-22,3057,BBG000TGLV00,EchoStar Corporation,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AEC,2003-09-10,2015-08-06,2998,BBG002PL1DW6,Anfield Energy Inc. Common Shares,,,,0,,,46,-67.27,46,0,0.0,0,0,,
+RJET,2004-05-27,2016-03-07,2964,BBG00LFWMKM3,Republic Airways Holdings Inc. Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+IRE,2003-09-10,2015-02-13,2877,BBG01Y00H692,Defiance Daily Target 2X Long IREN ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+CBRX,2004-02-13,2015-04-10,2807,BBG022MDDJ95,Tradr 2X Long CBRS Daily ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+ACTS,2005-11-30,2016-12-16,2771,BBG0200WVGR7,FIS Tactical Equity ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BSP,2003-09-10,2014-09-05,2767,CIK__0002004711,Bending Spoons S.p.A. Ordinary Shares,,,,0,,,73,-53.83,73,0,0.0,0,0,,
+NVC,2003-09-10,2014-06-06,2704,BBG02310H7F9,Corgi NVDA 2x Daily ETF,,,,0,,,73,-43.42,76,0,0.0,0,0,,
+NCO,2003-09-10,2014-06-06,2700,CIK__0002116230,Southern Cross Acquisition I Corp. Ordinary Shares,,,,0,,,73,-41.25,76,0,0.0,0,0,,
+ONTX,2013-07-25,2024-04-02,2690,BBG02316KW49,Corgi ONTO 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,3,0,,TRAW
+MLPI,2010-04-01,2020-11-23,2682,BBG01YZ97FJ5,NEOS MLP & Energy Infrastructure High Income ETF,,,,0,,,41,-64.74,41,0,0.0,0,0,,
+HIS,2003-09-10,2013-11-15,2566,BBG022899R06,Humilis US Focused Opportunities ETF,,,,0,,,65,-57.74,70,0,0.0,0,0,,
+ACCL,2004-02-27,2014-04-29,2560,CIK__0002038378,Acco Group Holdings Limited Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BITA,2010-11-17,2020-11-04,2509,BBG022ZT28C8,The iShares Bitcoin Premium Income ETF Shares of Fractional Undivided Beneficial Interest,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CpR,2003-10-13,2013-08-29,2488,CIK__0000831001,"Citigroup Inc. Depositary Shares, Each Representing a 1/1,000th Interest in a Share of 6.250% Noncumulative Preferred Stock, Series II",,,,0,,,0,0.0,0,0,0.0,0,0,,
+DTK,2008-03-03,2018-01-17,2488,CIK__0000936340,DTE Energy Company 2025 Series H 6.25% Junior Subordinated Debentures due 2085,,,,0,,,60,-125.98,37,23,-52.29,0,0,,DTK.CL
+PRXI,2006-06-19,2016-02-09,2419,BBG022JGCXS1,Praxis Impact International ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+NMP,2003-09-10,2013-01-04,2335,CIK__0002054876,NMP Acquisition Corp. Class A Ordinary Shares,,,,0,,,55,-29.08,55,0,0.0,0,0,,
+VISN,2007-12-06,2017-03-06,2322,BBG004LTL7L2,"Vistance Networks, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+VSNT,2003-09-10,2012-12-20,2281,BBG01Y0M8K11,"Versant Media Group, Inc. Class A Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,ALLB
+EROC,2006-10-25,2015-10-08,2254,BBG022FRS3L7,"ERock, Inc.",,,,0,,,33,-66.83,33,0,0.0,0,0,,
+PDC,2003-09-10,2012-07-27,2235,BBG01C6G62Z1,Perpetuals.com Ltd American Depositary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ATTO,2014-10-02,2023-07-21,2215,BBG01H3TV5J8,"Attovia Therapeutics, Inc. Common Stock",,,,0,,,1,-3.34,1,0,0.0,1,0,,
+POWR,2007-08-22,2016-05-06,2193,BBG002GKQZG0,iShares U.S. Power Infrastructure ETF,,,,0,,,8,-19.7,0,8,-19.7,0,0,,
+UGLD,2011-10-17,2020-07-02,2192,BBG022DW2M98,DIREXION DAILY GOLD BULL 2X ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+USLV,2011-10-17,2020-07-02,2192,BBG022DSCT91,DIREXION DAILY SILVER BULL 2X ETF,,,,0,,,0,0.0,0,0,0.0,2,0,,
+OSG,2015-12-18,2024-07-09,2151,BBG004HQHKK0,"Octave Specialty Group, Inc.",,,,0,,,3,-4.85,3,0,0.0,1,0,,SUNS
+BREW,2012-03-22,2020-09-29,2145,BBG0223F8XJ5,Corgi Coffee & Energy Drinks ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ZINC,2007-08-10,2016-02-10,2141,BBG022LF61Y0,Zacks Income ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LIME,2008-02-25,2016-08-30,2106,BBG00G720BY0,"Neutron Holdings, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,1,0,,
+WX,2007-08-09,2015-12-10,2101,BBG022KDVKB1,Corgi All World 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AMAC,2003-09-10,2011-12-22,2077,CIK__0002110119,AMR Resources Acquisition Corp Class A Ordinary Shares,,,,0,,,2,-3.09,2,0,0.0,0,0,,
+AZUL,2017-04-11,2025-05-27,2043,BBG01ZF76VW9,"Azul S.A. American Depositary Shares, each representing two (2) Common Shares",,,,0,,,0,0.0,0,0,0.0,0,0,,
+ANV,2007-05-10,2015-03-09,1971,BBG01ZVX3SV5,GraniteShares Autocallable NVDA ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BEC,2003-09-10,2011-06-29,1966,BBG0230L5JW2,Corgi BE 2x Daily ETF,,,,0,,,29,-7.66,29,0,0.0,0,0,,
+EYES,2014-11-19,2022-08-30,1958,BBG0223CRDV1,Corgi Data & Surveillance ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,VANI
+AKTS,2017-03-13,2024-12-17,1956,BBG00ZQS8KZ1,"Aktis Oncology, Inc. Common stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+TRAD,2003-09-10,2011-06-10,1953,CIK__0002085485,APEX Tech Acquisition Inc.,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CHAD,2015-06-17,2023-02-17,1933,CIK__0001805526,DeFi Development Corp. Variable Rate Series C Perpetual Preferred Stock,,,,0,,,9,-4.25,9,0,0.0,0,0,,
+GENZ,2003-09-10,2011-04-08,1910,BBG000V86Z03,VanEck ETF Trust VanEck Digital Native Economy ETF,,,,0,,,3,-4.72,0,3,-4.72,0,0,,
+SMCP,2015-04-21,2024-12-19,1887,BBG0222SW8N1,SMART Mid Cap ETF,,,,0,,,4,-2.74,5,0,0.0,0,0,,
+PLA,2003-09-10,2011-03-04,1885,BBG0227KP441,GraniteShares Autocallable PLTR ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ADAM,2003-09-10,2011-02-07,1866,BBG000GZ8014,"Adamas Trust, Inc. Common Stock",,,,0,,,11,-48.33,0,11,-48.33,0,0,,
+BEZ,2003-09-10,2011-01-27,1860,BBG0203BCST3,Tradr 2X Short BE Daily ETF,,,,0,,,29,-17.11,29,0,0.0,0,0,,
+CBC,2003-09-10,2011-01-26,1859,BBG000CQ0CD7,"Central Bancompany, Inc. Class A Common Stock",,,,0,,,21,-14.87,21,0,0.0,0,0,,
+TSCM,2003-09-10,2011-01-26,1859,BBG01Z96TQ90,TimesSquare Quality Mid Cap Growth ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,TST
+PSApU,2012-06-18,2019-09-11,1820,CIK__0001393311,"Public Storage 6.000% Cumulative Preferred Shares of Beneficial Interest, Series U",,,,0,,,0,0.0,0,0,0.0,0,0,,PSApU.CL
+DMC,2004-04-22,2011-07-08,1812,CIK__0001047340,Del Monte Corporation,,,,0,,,14,-15.57,0,14,-15.57,0,0,,
+NYM,2003-09-10,2010-11-23,1811,BBG01Y2G81Z7,AB New York Intermediate Municipal ETF,,,,0,,,28,-8.4,28,0,0.0,0,0,,TDE
+AV,2009-10-20,2016-12-22,1808,BBG0223BRHL5,Corgi Aerospace & Commercial Aviation ETF,,,,0,,,14,-35.92,14,0,0.0,0,0,,
+MATR,2011-06-01,2018-08-17,1807,BBG01J2RGHB8,Harbor Multi-Asset Total Return ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ALOY,2003-09-10,2010-11-09,1761,BBG007GGHNQ4,REalloys Inc. Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+OXLCM,2017-06-19,2024-06-28,1689,CIK__0001495222,"Oxford Lane Capital Corp. Preferred Stock Shares, 8.25% Series 2031",,,,0,,,89,-160.22,84,9,-23.64,0,0,,LJUL
+RMIX,2003-09-10,2010-05-07,1677,BBG021H587F5,"Suncrete, Inc. Class A Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+LGN,2003-09-10,2010-04-19,1651,BBG01WRYRPZ1,Legence Corp. Class A Common stock,,,,0,,,0,0.0,0,0,0.0,1,0,,
+ONT,2003-09-10,2010-02-19,1623,BBG005Q29TZ4,"Onterris, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,
+DISK,2003-09-10,2010-02-02,1610,BBG022NPKFK4,Tema Memory ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FIXX,2018-03-28,2024-03-25,1508,BBG024FLKP99,Leverage Shares 2X Long FIX Daily ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+MOBI,2010-12-10,2016-11-16,1495,BBG021RYC5B4,"Mobia Medical, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+HYP,2003-09-10,2009-06-15,1451,BBG01XBV7VX3,Golden Eagle Dynamic Hypergrowth ETF,,,,0,,,10,-10.67,10,0,0.0,0,0,,
+EMIS,2003-09-10,2009-06-08,1446,CIK__0002075816,Emmis Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PCR,2003-09-10,2009-05-29,1440,BBG01XB0G4C4,Simplify VettaFi Private Credit Strategy ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+HMH,2008-12-29,2014-08-12,1414,BBG01P7MPQ84,HMH Holding Inc. Class A Common Stock,,,,0,,,68,-56.92,68,0,0.0,1,0,,
+NUCL,2008-06-25,2014-10-14,1401,BBG020LPCLG1,Eagle Nuclear Energy Corp. Common stock,,,,0,,,11,-16.1,11,0,0.0,0,0,,
+GPT,2013-04-15,2018-10-09,1384,BBG01PT2XZD9,EA Series Trust Intelligent Alpha Atlas ETF,,,,0,,,40,-34.27,40,0,0.0,1,0,,
+IMC,2007-03-30,2012-10-12,1382,CIK__0002098395,IMC Rare Earths Ltd,,,,0,,,0,0.0,0,0,0.0,0,0,,OBAF
+ELOX,2018-04-26,2023-10-13,1377,BBG000BGGWS3,"Eloxx Pharmaceuticals, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,1,0,,
+PSApT,2012-03-13,2017-08-04,1359,CIK__0001393311,"Public Storage 6.000% Cumulative Preferred Shares of Beneficial Interest, Series T",,,,0,,,0,0.0,0,0,0.0,0,0,,MITTpA
+GEQ,2011-10-27,2017-03-17,1355,BBG022MJ4912,Cambria Global EW 2 ETF,,,,0,,,21,-50.71,21,0,0.0,0,0,,OMNT
+HOLD,2016-03-08,2023-03-31,1353,BBG01WJ033C4,Harbor Alpha Layering ETF,,,,0,,,73,-9.38,85,0,0.0,0,0,,
+JONE,2013-07-24,2018-11-26,1347,CIK__0002129056,Jones Ventures INTL Acquisition1 Corp Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,2,0,,
+PRTO,2014-10-22,2020-01-09,1313,BBG020WW9ZQ6,RCN Pareto Strategic Allocation ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FWDI,2011-06-21,2019-03-22,1310,BBG020WJG333,"Forward Industries, Inc. Common Stock",,,,0,,,4,-6.92,9,0,0.0,0,0,,HEpU
+EEE,2006-09-29,2011-12-01,1304,BBG01ZY1KD46,CYBER HORNET S&P 500 and Ethereum 75/25 Strategy ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+SMHD,2015-02-04,2020-03-20,1291,BBG0243CCY29,MicroSectors -3x Short Semiconductor ETNs,,,,0,,,61,-96.86,61,0,0.0,0,0,,
+USX,2018-06-14,2023-06-30,1270,BBG022KDYDQ8,Corgi Total U.S. Market 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CTAA,2016-02-01,2021-02-12,1269,CIK__0002094073,ClearThink 1 Acquisition Corp. Class A Ordinary Shares,,,,0,,,18,-31.18,18,0,0.0,0,0,,
+DPU,2008-05-05,2016-04-15,1238,CIK__0001938865,Top KingWin Ltd Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CHNL,2003-09-10,2009-01-07,1234,BBG021D2D5X4,Chainlink ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+EMXX,2012-01-30,2016-12-23,1234,BBG022KFCNP6,Corgi Emerging Markets 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,EMX
+JAN,2019-09-11,2024-07-12,1216,BBG020PSLYJ0,"Janus Living, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,
+DSC,2005-11-15,2010-12-17,1214,BBG022LJ7N64,DSC Holdings Ltd. American Depositary Shares,,,,0,,,7,-2.47,7,0,0.0,0,0,,CVOL
+MAIR,2003-09-10,2008-07-03,1212,BBG020W40ST0,Madison Air Solutions Corporation,,,,0,,,0,0.0,0,0,0.0,0,0,,AXK
+GTOP,2003-10-30,2008-08-15,1207,BBG01YW1Y080,Goldman Sachs Technology Opportunities ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AHD,2006-07-21,2011-04-27,1201,BBG0227KPCV3,GraniteShares Autocallable HOOD ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,ATLS
+SHOE,2003-09-10,2008-07-25,1201,BBG000BF4DG3,"Shoe Station Group, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+MEMY,2004-04-05,2009-01-05,1191,BBG01YZLRYL2,Tuttle Capital Meme Stock Income Blast ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MEDS,2020-02-13,2024-09-20,1158,BBG01LG7MTZ3,"DataMeds AI, Inc. Common Stock",,,,0,,,2,-47.33,2,0,0.0,1,0,,SCNX
+SPRB,2020-10-09,2025-04-28,1142,BBG00HYZ1522,"Spruce Biosciences, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+KTWO,2014-05-08,2018-11-08,1137,CIK__0002086524,K2 Capital Acquisition Corporation Class A Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GLDN,2003-09-10,2008-02-28,1125,BBG02029KQD1,Nicholas Gold Income ETF,,,,0,,,11,-7.79,11,0,0.0,0,0,,
+ASTT,2003-09-10,2008-03-26,1120,BBG023112WH6,Corgi ASTS 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CAST,2007-10-29,2012-03-30,1115,BBG00RSFM3Y8,"FreeCast, Inc. Class A Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+ARTC,2010-01-22,2014-05-29,1095,CIK__0002086545,Art Technology Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FEED,2007-08-29,2011-12-19,1087,BBG008LFXN26,"ENvue Medical, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+RISE,2015-02-19,2020-10-30,1087,BBG021MJ18G3,Pictet Emerging Markets Rising Economies ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ELE,2003-09-10,2007-12-06,1067,BBG00WDT6VH8,Elemental Royalty Corporation Common Stock,,,,0,,,8,-22.43,8,0,0.0,0,0,,
+ASD,2003-09-10,2007-11-27,1062,BBG022LH00D7,Defiance Autism Impact ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+STEN,2003-09-10,2009-02-11,1059,BBG01XHFS334,iShares Large Cap 10% Target Buffer Sep ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LQ,2014-04-09,2018-05-30,1043,BBG0222LFVT8,Simplify Tax Aware Alternatives ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+APLX,2003-09-10,2007-10-25,1040,BBG01X4RKPH6,Tradr 2X Long APLD Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BAY,2003-09-10,2007-09-26,1019,BBG0223DGGM4,Corgi Bay Area Based ETF,,,,0,,,4,-9.28,4,0,0.0,0,0,,
+PSAI,2003-09-10,2007-08-31,1002,BBG02247Q8M3,Pacer S&P 500 3AI Top 100 ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,LSBX
+RACK,2005-06-10,2009-05-15,990,BBG022QSGJ86,VanEck Data Center Supply Chain ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,SGI
+ARCP,2011-09-07,2015-07-30,980,BBG023X5L6C3,Aristotle Core Plus Income ETF,,,,0,,,40,-25.2,40,0,0.0,0,0,,VER
+MPT,2003-09-10,2007-07-20,961,BBG000BGRB25,"Medical Properties Trust, Inc.",,,,0,,,8,-14.96,0,8,-14.96,0,0,,
+SPAX,2021-06-23,2025-04-07,952,BBG022WMC700,T-REX 2X Long SPCX Daily Target ETF,,,,0,,,7,-13.74,7,0,0.0,0,0,,
+RVI,2018-07-02,2022-04-06,949,BBG01ZT0DK46,Robinhood Ventures Fund I,,,,0,,,4,-90.08,4,0,0.0,0,0,,
+WEBX,2003-09-10,2007-05-25,934,BBG022KD7ZB5,Corgi Chinese Internet 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PMA,2008-04-14,2013-02-26,932,CIK__0001956166,PMA Graphene Technology Group Inc. Class A Ordinary Shares,,,,0,,,10,-5.4,13,0,0.0,0,0,,
+TWAV,2003-09-10,2007-05-24,932,BBG000M1B3Z5,"TaoWeave, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+CIFC,2013-03-25,2016-11-21,921,BBG02310YC23,Corgi CIFR 2x Daily ETF,,,,0,,,3,-9.28,5,0,0.0,0,0,,
+USMD,2012-09-07,2016-09-30,919,BBG01YRJRGQ0,CoreValues America First Technology ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DBGI,2021-05-14,2024-12-17,905,BBG00S90Q1M3,"Digital Brands Group, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,3,0,,
+XXV,2010-07-19,2018-04-12,887,BBG01YL7C7H8,Simplify Ancorato Target 25 Distribution ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TPAY,2019-02-01,2022-07-14,869,BBG02090PRV6,Roundhill S&P 500 Target 10 Managed Distribution ETF,,,,0,,,2,-1.98,2,0,0.0,0,0,,SBpC
+JHDG,2015-04-09,2019-03-14,868,BBG0219KN531,John Hancock Hedged Equity ETF,,,,0,,,7,-4.6,10,0,0.0,0,0,,
+PTNT,2012-01-11,2015-09-21,849,BBG0223F67H6,Corgi IP Licensing & Royalties ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+EMBX,2003-09-10,2007-01-19,845,BBG01XNSM1N7,VanEck Emerging Markets Bond ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+NMBL,2013-12-13,2017-04-13,839,BBG01X71ZRZ0,NovaTide Flexible Allocation ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BRBI,2003-09-10,2007-09-21,838,BBG01XB0GM34,BRBI BR Partners S.A. ADSs,,,,0,,,3,-1.09,5,0,0.0,0,0,,ICH
+BREZ,2020-12-23,2024-05-28,838,CIK__0002095443,Breeze Acquisition Corp. II Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,FNVT
+TP,2003-09-10,2006-12-01,815,CIK__0002104296,Ticketplus Ltd.,,,,0,,,0,0.0,0,0,0.0,0,0,,TNT
+ALA,2003-09-10,2006-11-30,814,BBG02316FV29,Corgi ALAB 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,ALU
+CD,2020-09-30,2023-12-18,810,CIK__0001527762,Chaince Digital Holdings Inc. Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+RENX,2015-07-02,2018-09-07,803,BBG01FC82RN7,RenX Enterprises Corp. Common Stock,,,,0,,,7,-8.41,7,0,0.0,0,0,,
+ATCX,2020-02-18,2023-04-18,795,CIK__0001684688,Atlas Critical Minerals Corporation Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ACOM,2009-11-05,2012-12-28,792,BBG022ZS0DM0,Harbor Active Commodity ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GNMX,2016-12-16,2020-02-03,786,BBG02238C2H6,Corgi Genomics & Precision Medicine ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BREZR,2020-12-23,2024-05-28,783,CIK__0002095443,Breeze Acquisition Corp. II Right,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SCA,2017-08-25,2021-02-11,780,BBG022G7YWK0,GraniteShares Autocallable SMCI ETF,,,,0,,,10,-14.26,11,0,0.0,0,0,,REXRpA
+ENTL,2015-01-29,2018-02-27,776,BBG0236XZCD3,Leverage Shares 2X Long ENTG Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,IBCD
+CONX,2020-12-21,2024-05-03,757,BBG01Y692BQ3,Direxion Daily COIN Bull 2X ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,OGCP
+SCOP,2005-12-13,2009-03-11,748,BBG01P47NM54,Sprott Physical Copper Trust,,,,0,,,0,0.0,0,0,0.0,0,0,,
+RML,2003-09-10,2006-08-01,729,BBG01ZZRV7G6,Resolution Minerals Ltd American Depositary Shares,,,,0,,,10,-2.36,10,0,0.0,0,0,,
+FTW,2012-02-28,2018-04-17,726,BBG020RZKCV7,Presidio Production Company,,,,0,,,3,-6.93,4,0,0.0,0,0,,EUFX
+CATG,2003-09-10,2006-07-27,725,BBG0226HVHV3,Leverage Shares 2X Long CAT Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LSCP,2003-09-10,2006-07-25,724,BBG022FZRP13,Natixis Loomis Sayles Dynamic Core Plus ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+VIA,2021-08-10,2024-06-13,716,BBG007XLFXD8,"Via Transportation, Inc.",,,,0,,,7,-14.29,7,0,0.0,1,0,,
+DPC,2006-10-13,2010-03-24,713,CIK__0002107018,DPC Holdings PLC,,,,0,,,5,-7.06,6,0,0.0,0,0,,
+COOL,2021-02-19,2024-06-24,712,BBG0241MX7X1,"VegaShares AI Thermal, Cooling & Power Management ETF",,,,0,,,0,0.0,0,0,0.0,0,0,,BLUA
+CAQ,2005-04-26,2008-04-28,700,CIK__0002100125,Cambridge Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,PSBC
+BXDC,2009-11-18,2013-01-10,698,BBG021LKSLX4,Blackstone Digital Infrastructure Trust Inc.,,,,0,,,0,0.0,0,0,0.0,0,0,,SPPRP
+FIYY,2018-03-16,2020-12-10,685,BBG021ZCKDK7,GraniteShares YieldBOOST 20Y Treasuries ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GLDB,2021-05-18,2024-01-31,681,BBG01XJ49QR1,IDX Alternative FIAT ETF,,,,0,,,31,-6.79,31,0,0.0,0,0,,GOLY
+NBP,2003-09-10,2006-05-19,679,BBG00QQ8DFK6,NovaBridge Biosciences American Depositary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,OKS
+ACSG,2018-12-06,2021-08-17,678,BBG01XQ53YJ8,American Century Small Cap Growth Insights ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DYNC,2016-06-28,2019-06-28,678,CIK__0002028699,Dynamix Corporation Class A Ordinary Shares,,,,0,,,5,-9.02,5,0,0.0,0,0,,
+HLTH,2021-09-24,2024-06-05,678,BBG022LDK687,Tema Healthcare AI ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MHX,2003-09-10,2006-05-02,666,BBG02312VLK2,Corgi MARA 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BVC,2003-09-10,2006-04-28,661,CIK__0001785680,BitVentures Limited Ordinary Shares,,,,0,,,1,-13.35,1,0,0.0,1,0,,GLK
+AAC,2021-03-25,2023-11-06,660,CIK__0002128115,Ares Acquisition Corporation III,,,,0,,,0,0.0,0,0,0.0,0,0,,PACI
+GDT,2003-09-10,2006-04-21,659,BBG01YYS01M8,WisdomTree Efficient TIPS Plus Gold Fund,,,,0,,,9,-1.36,9,0,0.0,0,0,,
+REFA,2017-07-13,2020-02-14,650,BBG01YZNS3H0,Columbia Research Enhanced International Equity ETF,,,,0,,,4,-3.07,4,0,0.0,0,0,,PRIFpD
+PPLC,2018-02-15,2020-09-25,649,CIK__0000922224,PPL Corporation Corporate Units,,,,0,,,8,-6.76,9,0,0.0,0,0,,
+ESSC,2020-03-20,2022-11-11,634,BBG01XMMFYP5,Eventide Small Cap ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GPAC,2021-03-05,2024-07-08,634,CIK__0002085408,General Purpose Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TMS,2011-04-14,2013-10-16,631,BBG01SRKGPB8,Teamshares Inc. Common Stock,,,,0,,,2,-1.27,2,0,0.0,0,0,,
+ARCL,2009-11-20,2012-05-17,627,CIK__0002073515,ARC Group Acquisition I Corp Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DINE,2008-05-27,2010-12-14,625,BBG0222LFMG2,Simplify Tax Aware Diversified Income Strategy ETF,,,,0,,,1,-15.49,1,0,0.0,0,0,,CEBK
+AAC.WS,2021-03-25,2023-10-30,618,CIK__0002128115,"Ares Acquisition Corporation III Redeemable warrants, each whole warrant exercisable for one Class A ordinary share at an exercise price of $11.50",,,,0,,,0,0.0,0,0,0.0,0,0,,
+PLTL,2021-05-20,2023-10-13,605,BBG02316HJ51,Corgi PLTR 2x Daily ETF,,,,0,,,11,-4.3,11,0,0.0,0,0,,
+MF,2021-06-25,2023-11-16,604,CIK__0001888525,MindForge Inc. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,1,0,,ABTS
+AIX,2003-11-10,2006-04-17,594,BBG022WKNDT8,Defiance US 100 Tech AI Moat ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,AIXD
+AAC.U,2021-02-02,2023-11-06,592,CIK__0002128115,"Ares Acquisition Corporation III Units, each consisting of one Class A ordinary share and one-tenth of one redeemable warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,PEPL
+CSRA,2015-11-30,2018-04-03,589,BBG0247L7YG6,Cohen & Steers Real Assets Active ETF,,,,0,,,10,-3.38,10,0,0.0,0,0,,
+INDZ,2010-03-12,2012-09-05,588,BBG0206S8Z76,VanEck India Select ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TWLV,2021-04-29,2024-06-07,587,CIK__0002052243,Twelve Seas Investment Company III Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,KRNL
+MPG,2014-12-12,2017-04-05,582,BBG01Y4G3B97,Leverage Shares 2X Long MP Daily ETF,,,,0,,,8,-4.0,8,0,0.0,0,0,,AAXN
+BWOW,2010-05-05,2012-11-08,574,BBG01YQ3DTV7,Bitwise Dogecoin ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GPACW,2021-03-08,2024-07-08,567,CIK__0002085408,General Purpose Acquisition Corp. Warrant,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AAAP,2015-11-11,2018-02-09,566,BBG0230LKZ04,Pacer Barings CLO Market Flex ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BRKHW,2022-02-01,2024-12-17,563,CIK__0002098707,Burtech Acquisition Corp II Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,DYNXW
+FNG,2017-07-12,2019-10-04,563,BBG022ZV0GC7,Leverage Shares 2X Long FN Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,PIC.U
+VII,2021-02-12,2023-12-14,561,CIK__0002139246,Viking Acquisition Corp. II,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AYA,2015-06-08,2017-07-31,542,BBG000Q62W77,Aya Gold & Silver Inc. Common Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,TSG
+IGACU,2020-10-01,2023-01-11,531,CIK__0002075068,Invest Green Acquisition Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,RCLFU
+IGAC,2020-12-01,2023-01-11,520,CIK__0002075068,Invest Green Acquisition Corporation Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,FTEV.U
+MTAL.WS,2021-09-21,2024-06-04,520,CIK__0002107724,"Metals Acquisition Corp. II Warrants, each whole warrant exercisable for one Class A ordinary share at an exercise price of $11.50 per share",,,,0,,,0,0.0,0,0,0.0,0,0,,
+IBCB,2013-04-19,2016-03-29,516,BBG0210TPRD0,iShares iBonds Dec 2036 Term Corporate ETF,,,,0,,,22,-1.2,36,0,0.0,0,0,,
+LEND,2019-05-09,2021-06-25,516,BBG022DSHP67,SEI High Yield Bond & Alternative Credit ETF,,,,0,,,1,-5.49,1,0,0.0,0,0,,
+GLDW,2017-01-30,2019-09-09,514,BBG01Y69JQ46,Roundhill Gold WeeklyPay ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BRKH,2022-01-31,2024-12-17,509,CIK__0002098707,Burtech Acquisition Corp II Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+REMC,2003-09-10,2005-10-12,508,BBG01YZNQVG1,Columbia Research Enhanced Mid Cap ETF,,,,0,,,1,-22.65,1,0,0.0,0,0,,
+MEME,2021-12-08,2023-12-12,506,BBG01XM5X8M2,Roundhill Meme Stock ETF,,,,0,,,1,-2.35,1,0,0.0,1,0,,
+GPACU,2021-01-12,2024-07-08,500,CIK__0002085408,General Purpose Acquisition Corp. Units,,,,0,,,0,0.0,0,0,0.0,0,0,,HLXB
+REF,2003-09-10,2007-04-25,500,BBG023C4MJS3,Reformation Inc.,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GASZ,2011-06-16,2014-01-22,496,BBG0223F8FX8,Corgi Natural Gas Power & Turbines ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FLYT,2020-02-05,2022-01-14,492,BBG01Y1XV407,Tradr 2X Long FLY Daily ETF,,,,0,,,7,-6.0,7,0,0.0,0,0,,
+MYX,2008-03-20,2010-03-25,488,CIK__0002080087,Maywood Acquisition Corp. 2 Class A Ordinary Share,,,,0,,,5,-17.34,5,0,0.0,0,0,,
+REA,2008-06-12,2010-05-21,481,BBG021LYDZL2,"Rare Earths Americas, Inc.",,,,0,,,7,-1.96,7,0,0.0,0,0,,DGICB
+FTG,2003-09-10,2005-12-29,480,BBG024BGD4X2,FullerThaler Behavioral Growth ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DICE,2021-09-15,2023-08-08,477,BBG0246BC068,Tema Trading & Prediction Markets ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AERO,2007-06-13,2009-05-01,476,BBG01MVJRCW3,"Grupo Aeromexico, S.A.B. de C.V. American Depositary Shares (each representing ten (10) Common Shares)",,,,0,,,0,0.0,0,0,0.0,0,0,,
+TRNI,2003-09-10,2005-12-14,473,CIK__0001786108,Trinity Capital Inc. 7.875% Notes Due 2029,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AGCC,2003-09-25,2005-08-09,472,CIK__0002060016,Agencia Comercial Spirits Ltd Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SPCH,2003-09-10,2005-09-20,466,BBG022VBPTK1,Leverage Shares 2X Long SPCX Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,VMV
+AGNT,2003-09-10,2005-07-07,460,BBG001DCTG63,"AGNT, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+APAC,2021-09-14,2024-04-02,454,CIK__0002043630,StoneBridge Acquisition II Corporation Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+HCIC,2021-03-08,2022-12-21,451,CIK__0002099093,Hennessy Capital Investment Corp. VIII Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,TIOAU
+HCICU,2021-01-15,2022-12-21,448,CIK__0002099093,Hennessy Capital Investment Corp. VIII Units,,,,0,,,0,0.0,0,0,0.0,0,0,,KAIIU
+FWAC,2021-05-25,2023-08-25,445,CIK__0002116105,Futurewave Acquisition Corporation Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+EMEM,2017-11-09,2020-01-24,444,BBG022G5L6P0,Sophus Capital Emerging Market ETF,,,,0,,,3,-5.91,3,0,0.0,0,0,,IROQ
+DCX,2008-09-11,2010-08-27,443,CIK__0001957413,Digital Currency X Technology Inc. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,AMM
+FFF,2003-09-10,2005-06-10,442,BBG01YVQ5X22,Founders 100 ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+WLTH,2021-09-09,2023-06-12,442,BBG002WK8MH0,Wealthfront Corporation Common Stock,,,,0,,,21,-6.42,21,0,0.0,0,0,,
+RPC,2009-09-25,2011-06-22,438,BBG012QFRJQ3,"Ridgepost Capital, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,
+AXG,2008-02-14,2010-02-12,432,CIK__0001959224,Solowin Holdings Class A Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SAX,2005-03-18,2006-12-01,432,CIK__0001377936,Saratoga Investment Corp. 8.00% Notes due 2031,,,,0,,,6,-25.74,7,0,0.0,0,0,,
+XCOM,2019-01-16,2020-10-01,431,BBG022KDYJZ5,Corgi All Commodities 2x Daily ETF,,,,0,,,5,-0.73,5,0,0.0,0,0,,
+RAM,2021-07-09,2023-03-21,425,BBG0237JF8K6,Roundhill T-REX 2X Long DRAM Daily Target ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SSM,2008-05-12,2010-05-03,425,CIK__0001840416,Sono Group N.V. Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+VELO,2021-04-19,2022-12-20,422,BBG00YZ5PM63,"Velo3D, Inc. Common stock",,,,0,,,0,0.0,0,0,0.0,0,0,,TZPS
+GIX,2019-07-01,2021-06-09,421,CIK__0002098712,GigCapital9 Corp. Class A Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,UPH
+ACII,2021-03-29,2022-12-01,416,BBG01XK52JX2,Innovator Index Autocallable Income Strategy ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,FCAX.U
+BIOT,2021-03-22,2023-02-02,415,CIK__0002072188,Instinct Bio Technical Company Holdings Inc. Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,FMIV
+CBRG,2022-01-04,2024-11-18,415,BBG022CHM0M3,Leverage Shares 2X Long CBRS Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,MCAG
+EVAC,2012-05-11,2014-01-09,414,CIK__0002042902,EQV Ventures Acquisition Corp. II,,,,0,,,0,0.0,0,0,0.0,0,0,,CISAA
+CLIM,2021-03-19,2022-12-08,411,BBG020QM4CL6,Climate Global - Climate Resilient REIT Index ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,BSAQ.U
+BIOTW,2021-03-18,2023-02-02,409,CIK__0002072188,Instinct Bio Technical Company Holdings Inc. Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DSAC,2020-12-07,2022-07-29,405,CIK__0002082149,Daedalus Special Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DSPC,2021-05-19,2023-01-20,402,BBG024P86G93,Leverage Shares 1X Short SPCX Daily ETF,,,,0,,,2,-0.4,2,0,0.0,0,0,,TATT
+POW,2021-03-04,2023-01-12,401,BBG01XXJMF28,VistaShares Electrification Supercycle ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,GLST
+FOIL,2012-03-13,2018-04-06,399,BBG023GGRSK5,"Londian Wason New Energy Tech Inc. American Depositary Shares, each representing five Ordinary Shares",,,,0,,,0,0.0,0,0,0.0,0,0,,FTAG
+EASY,2005-12-23,2007-08-17,394,BBG01XHJJ0D1,Liberty One Defensive Dividend Growth ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ATC,2021-02-04,2022-08-16,386,BBG0222TWJS0,GraniteShares Autocallable COIN ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+METG,2003-09-10,2005-03-31,383,BBG023HD4F33,Leverage Shares 2X Long META Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,ANJ
+VRC,2003-09-10,2005-03-11,379,BBG02310W9R5,Corgi VRT 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+FPWR,2003-09-10,2005-04-13,373,BBG00PZ234D5,First Trust EIP Power Solutions ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,FPB
+LYNX,2003-09-10,2005-03-02,372,BBG0231SX4H5,Lyntris Inc.,,,,0,,,0,0.0,0,0,0.0,1,0,,
+APXT,2019-11-05,2021-07-01,369,CIK__0002079253,Apex Treasury Corporation Class A Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,AVPT
+AMZG,2013-11-20,2015-05-08,368,BBG023HBKRD2,Leverage Shares 2X Long AMZN Daily ETF,,,,0,,,0,0.0,0,0,0.0,1,0,,
+HCAC,2019-04-16,2020-12-21,362,CIK__0002079013,Hall Chadwick Acquisition Corp Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BMM,2004-09-16,2006-02-09,354,BBG000VLHCM9,Blue Moon Metals Inc. Common Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,OPX
+DSACW,2020-12-07,2022-07-29,353,CIK__0002082149,Daedalus Special Acquisition Corp. Warrant,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TLG,2006-06-15,2007-10-31,345,BBG020WWV5J5,Touchstone Large Company Growth ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+APXTW,2019-11-05,2021-07-01,341,CIK__0002079253,Apex Treasury Corporation Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ARKY,2023-11-15,2025-03-27,341,BBG024DN9VB4,ARK Active Autocallable Income ETF,,,,0,,,4,-22.28,4,0,0.0,0,0,,
+TSIB,2021-04-05,2022-11-30,340,BBG023X50GX1,Direxion TSLA Defined Income Boost ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,MPRAU
+FMAC,2020-11-27,2022-03-28,335,CIK__0002099232,Future Money Acquisition Corporation Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,DGNU
+TSIC,2003-09-10,2004-12-23,326,BBG01ZBB7WZ8,Truth Social American Icons ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CIRC,2022-09-08,2023-12-15,321,BBG0074P1FJ9,"Circle8 Group, Inc. Common Stock",,,,0,,,1,-0.4,1,0,0.0,1,1,2023-08-31,
+APXTU,2019-09-17,2021-06-30,318,CIK__0002079253,Apex Treasury Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,QRTEB
+MRDN,2017-01-25,2018-04-30,318,BBG000L2PL07,Meridian Holdings Inc. Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+DFNS,2020-03-23,2021-08-26,317,BBG00SHZKZD8,T3 Defense Inc. Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ONG,2022-01-20,2023-04-21,315,BBG022Q0MX98,Leverage Shares 2X Long ON Daily ETF,,,,0,,,4,-0.69,4,0,0.0,0,0,,
+CALY,2023-07-13,2024-10-09,314,BBG000CPCVY1,Callaway Golf Company,,,,0,,,7,-5.11,7,0,0.0,0,0,,
+ROC,2021-12-29,2023-06-20,304,BBG018NRNJX3,Rank One Computing Corporation Common stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MRA,2006-08-31,2007-11-20,303,BBG022G80L92,GraniteShares Autocallable MARA ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MMK,2005-11-22,2007-01-31,297,BBG0202DNYG9,State Street Prime Money Market ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LFACW,2022-01-10,2023-10-02,290,CIK__0002084563,Leapfrog Acquisition Corporation Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+HCACU,2019-03-01,2020-12-21,284,CIK__0002079013,Hall Chadwick Acquisition Corp. Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SKYA,2021-07-23,2023-04-28,284,BBG016P8XW30,"SkyAI, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,THCP
+THOR,2018-12-07,2020-01-22,282,BBG022VDSH20,Thornburg Premium Income Builder ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+STXX,2014-10-31,2016-03-24,281,BBG021VCRXS2,Tradr 2X Long STX Daily ETF,,,,0,,,4,-2.55,5,0,0.0,0,0,,
+FUSE,2020-08-14,2021-09-22,279,BBG01S4RJCG9,Fusemachines Inc. Common stock,,,,0,,,0,0.0,0,0,0.0,0,0,,LOCC.U
+AMCI,2021-09-24,2023-02-08,278,BBG01BFJ8R35,AMC Robotics Corporation Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+STRN,2021-11-09,2022-12-15,278,BBG01WLTJRJ1,SMART Trend 25 ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AIB,2022-02-23,2024-05-08,277,BBG020VXPCB4,AIB Data Centers Inc.,,,,0,,,0,0.0,0,0,0.0,0,0,,KACL
+FTPA,2021-05-07,2023-03-15,273,BBG01Y3CRLV4,Franklin Pennsylvania Municipal Income ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+APMI,2021-10-06,2023-08-10,266,BBG02317Y7H3,Corgi AMAT 2x Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,TBMC
+TIPD,2022-04-07,2023-04-21,261,BBG01WMG79P4,Northern Trust 2055 Inflation-Linked Distributing Ladder ETF,,,,0,,,4,-9.66,4,0,0.0,0,0,,
+SNK,2010-07-12,2012-06-21,260,BBG022W895C6,GraniteShares 2x Short SpaceX Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,SOS
+AMA,2007-03-26,2008-04-08,257,BBG01X1D29L1,Defiance Daily Target 2X Long AMAT ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,TXA
+STLR,2016-10-28,2018-12-13,257,BBG021D23JQ3,Stellar ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LFAC,2022-01-12,2023-10-02,255,CIK__0002084563,Leapfrog Acquisition Corporation Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,CHEA
+TMTS,2020-11-02,2021-10-28,249,CIK__0002097364,Spartacus Acquisition Corp. II Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,NN
+GIW,2021-07-12,2022-12-23,245,CIK__0002080019,GigCapital8 Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,SPK
+SLVY,2011-05-27,2012-10-16,243,BBG023J18JM4,FT Vest Silver Strategy & Target Income ETF,,,,0,,,3,-1.32,6,0,0.0,0,0,,
+TMTSW,2020-11-04,2021-10-28,243,CIK__0002097364,Spartacus Acquisition Corp. II Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+HCMAW,2022-03-14,2024-03-20,241,CIK__0002069856,HCM III Acquisition Corp. Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SKYAW,2021-07-15,2023-04-28,241,BBG016R0TXX5,"SkyAI, Inc. Warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,
+HCMA,2022-03-16,2024-03-20,239,CIK__0002069856,HCM III Acquisition Corp. Class A Ordinary Share,,,,0,,,0,0.0,0,0,0.0,0,0,,GHLD
+AESP,2003-09-10,2004-08-18,236,CIK__0002082526,Aeon Acquisition I Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+QTI,2024-03-05,2025-01-27,225,BBG00ZLKV5F2,"QT Imaging Holdings, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+PONO,2021-10-12,2023-02-03,223,CIK__0002108164,"Pono Capital Four, Inc. Class A Ordinary Shares",,,,0,,,0,0.0,0,0,0.0,0,0,,
+JATT,2021-09-03,2023-03-20,222,CIK__0002112446,JATT II Acquisition Corp Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BZZ,2008-03-26,2010-04-07,219,BBG0223FH0N2,Corgi Drones & Urban Air Mobility ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+TSLI,2022-08-09,2023-06-16,216,BBG01X10NTW0,ProShares Ultra TSLA,,,,0,,,1,-8.5,1,0,0.0,0,0,,
+DSACU,2020-10-29,2022-07-29,208,CIK__0002082149,Daedalus Special Acquisition Corp. Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+ALPS,2022-09-28,2023-07-20,202,CIK__0002025774,ALPS Group Inc Ordinary Share,,,,0,,,5,-2.99,5,0,0.0,0,0,,
+BTQ,2009-01-06,2010-12-15,202,BBG01G970R62,BTQ Technologies Corp. Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MTAL.U,2021-07-29,2023-06-15,201,CIK__0002107724,"Metals Acquisition Corp. II Units, each consisting of one Class A ordinary share and one-third of one redeemable warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,GFGDU
+XZO,2006-10-25,2007-11-19,196,BBG01XL8FHT0,"Exzeo Group, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,
+BETA,2003-09-10,2004-07-15,194,BBG000MBSFT5,"Beta Technologies, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,HAWK
+BPAC,2022-01-25,2023-06-05,193,CIK__0002064177,Blueport Acquisition Ltd Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MFP,2006-01-26,2007-04-17,193,BBG01Y76YT20,"Midera Food Processing, Inc. Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+PTAC,2020-01-13,2020-12-23,193,CIK__0002099095,Patriot Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GSGO,2012-12-20,2014-08-27,189,BBG01YJK65Y4,Goldman Sachs Growth Opportunities ETF,,,,0,,,1,-0.68,3,0,0.0,0,0,,
+TMTSU,2020-10-15,2021-10-27,189,CIK__0002097364,Spartacus Acquisition Corp. II Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AACOW,2010-12-16,2012-10-15,185,CIK__0002099906,Abony Acquisition Corp. I Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SPCM,2022-04-25,2023-06-02,185,BBG022XF60B4,Tradr 2X Long SpaceX Daily ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+NTRL,2023-05-25,2024-02-15,183,BBG00RHJ0R55,First Trust Equity Market Neutral ETF,,,,0,,,5,-13.77,2,3,-1.61,0,0,,
+BBHL,2005-08-18,2006-05-12,179,BBG01YKJJNP2,BBH SELECT LARGE CAP ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PAACW,2019-06-21,2020-06-16,175,CIK__0002087446,Proem Acquisition Corp I Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+XE,2016-12-30,2017-09-14,175,BBG005DX1RC7,"X-Energy, Inc. Class A Common Stock",,,,0,,,2,-0.66,2,0,0.0,0,0,,
+MWH,2006-04-25,2007-05-16,173,BBG01ZPFR6N2,"SOLV Energy, Inc. Class A Common Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+XTND,2005-02-25,2005-10-26,170,BBG024BHQLG7,"Xtend AI Robotics, Inc.",,,,0,,,0,0.0,0,0,0.0,0,0,,
+PTACU,2019-11-22,2020-12-23,166,CIK__0002099095,Patriot Acquisition Corp. Units,,,,0,,,0,0.0,0,0,0.0,0,0,,
+GIWWU,2021-05-19,2022-12-22,165,CIK__0002080019,GigCapital8 Corp. Units,,,,0,,,0,0.0,0,0,0.0,0,0,,EVGR
+LEGO,2021-03-04,2021-10-19,160,CIK__0002087450,Legato Merger Corp. IV,,,,0,,,0,0.0,0,0,0.0,0,0,,
+OSPRU,2017-07-21,2018-08-23,160,CIK__0002113481,Osprey Acquisition Corp. III Units,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PAAC,2019-06-21,2020-06-16,158,CIK__0002087446,Proem Acquisition Corp I Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PTACW,2020-01-13,2020-12-23,153,CIK__0002099095,Patriot Acquisition Corp. Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BPACU,2021-12-03,2023-06-05,152,CIK__0002064177,Blueport Acquisition Ltd Units,,,,0,,,0,0.0,0,0,0.0,0,0,,CCTS
+FISN,2011-05-04,2012-02-16,144,BBG01PG735H7,"Deep Fission, Inc. Common Stock",,,,0,,,0,0.0,1,0,0.0,0,0,,
+OPENW,2020-12-21,2021-07-09,138,BBG01YKH5T05,"Opendoor Technologies Inc Series K Warrants, each whole warrant exercisable to purchase one share of Common Stock at an exercise price of $9.00 per warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,
+PAACU,2019-05-30,2020-06-16,134,CIK__0002087446,Proem Acquisition Corp I Units,,,,0,,,0,0.0,0,0,0.0,0,0,,GRNV
+CAPA,2020-11-13,2021-06-10,132,BBG024FGFHL0,Defiance AI Capacitors & MLCC ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,QSI
+HXF,2003-09-10,2004-04-23,132,BBG024G466F7,Mast HedgeIndex Managed Futures Strategy ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+KCAC.U,2022-03-02,2022-09-14,132,CIK__0002102713,"Kensington Capital Acquisition Corp. VI Units, each consisting of one Class A ordinary share, one-quarter of one Class 1 redeemable warrant and three-quarters of one Class 2 redeemable warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,
+OSPR,2017-09-08,2018-08-23,130,CIK__0002113481,Osprey Acquisition Corp. III Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,FLMN
+TPUT,2009-02-17,2009-08-19,129,BBG022S70H09,T. Rowe Price Capital Appreciation Market Opportunities ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+HXE,2003-09-11,2004-04-22,126,BBG024G4GVQ9,Mast HedgeIndex Adaptive Equities ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,JFBC
+LPBBU,2024-10-08,2025-06-17,126,CIK__0002023676,Launch Two Acquisition Corp. Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+SIMAU,2024-07-10,2025-05-29,124,CIK__0002014982,SIM Acquisition Corp. I Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+POLEU,2024-09-06,2025-06-03,122,CIK__0002025341,Andretti Acquisition Corp. II Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,TAVIU
+SPYM,2024-09-03,2025-02-21,118,BBG000KMT5K3,State Street SPDR Portfolio S&P 500 ETF,,,,0,,,2,-1.18,0,2,-1.18,0,0,,
+QETAU,2023-10-06,2025-06-13,113,BBG01J1BZMY7,Quetta Acquisition Corporation Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,RANGU
+CHAI,2023-12-13,2024-05-23,112,BBG000BXPF58,"Core AI Holdings, Inc. Common Shares",,,,0,,,3,-7.02,3,0,0.0,0,0,,
+GPATU,2024-05-09,2025-06-09,109,CIK__0001834526,GP-Act III Acquisition Corp. Units,,,,0,,,0,0.0,0,0,0.0,0,0,,BACQU
+OSPRW,2017-09-20,2018-08-23,109,CIK__0002113481,Osprey Acquisition Corp. III Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+CRAN,2004-04-20,2004-10-25,108,CIK__0002081358,Crane Harbor Acquisition Corp. II Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LWACW,2021-03-01,2021-08-25,106,CIK__0002061379,LightWave Acquisition Corp. Warrants,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LWAC,2021-03-01,2021-08-25,105,CIK__0002061379,LightWave Acquisition Corp. Class A Ordinary Shares,,,,0,,,0,0.0,0,0,0.0,0,0,,
+MULT,2014-07-09,2015-10-30,99,BBG01WL1Z682,Franklin Multisector Income ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,VXDN
+AFJKU,2023-12-04,2025-03-24,96,CIK__0001979005,"Aimei Health Technology Co., Ltd Unit",,,,0,,,0,0.0,0,0,0.0,0,0,,AITRU
+TAVIU,2024-12-04,2025-06-04,93,CIK__0002020385,Tavia Acquisition Corp. Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,AAM.U
+KCAC.WS,2022-05-05,2022-09-14,91,CIK__0002102713,"Kensington Capital Acquisition Corp. VI Class 1 redeemable warrants, each exercisable for one Class A ordinary share at an exercise price of $11.50",,,,0,,,0,0.0,0,0,0.0,0,0,,AMPX.WS
+TWLVR,2018-07-13,2019-04-02,85,CIK__0002052243,Twelve Seas Investment Company III Rights,,,,0,,,0,0.0,0,0,0.0,0,0,,
+KCA.U,2022-04-26,2022-09-14,82,CIK__0002102713,"Kensington Capital Acquisition Corp. VI New Units, each consisting of one Class A Ordinary Share and three-quarters of one Class 2 Redeemable Warrant",,,,0,,,0,0.0,0,0,0.0,0,0,,
+SLBT,2011-05-27,2012-09-27,80,CIK__0002070534,SL Science Holding Limited Ordinary Shares,,,,0,,,3,-1.38,6,0,0.0,0,0,,XHMO
+JACS.U,2024-12-10,2025-06-25,76,CIK__0002039058,"Jackson Acquisition Company II Units, each consisting of one Class A ordinary share and one right to acquire one-tenth (1/10) of one Class A ordinary share",,,,0,,,0,0.0,0,0,0.0,0,0,,
+TEST,2003-09-15,2004-09-09,74,BBG01YHJ7266,YieldMax TSLA Performance & Distribution Target 25 ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,
+PONOU,2022-03-21,2023-02-03,73,CIK__0002108164,"Pono Capital Four, Inc. Units",,,,0,,,0,0.0,0,0,0.0,0,0,,ENCPU
+YHNAU,2024-09-18,2025-06-17,67,CIK__0002020987,YHN Acquisition I Limited Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,DYNXU
+DTSQU,2024-07-25,2025-06-06,64,CIK__0002017950,DT Cloud Star Acquisition Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,
+NXUS,2005-11-16,2006-02-17,56,BBG01XG2Z8S8,Nuveen International Aggregate Bond ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,BORDW
+TOPW,2025-04-02,2025-05-23,37,BBG01WZSFQ59,Roundhill Top WeeklyPay ETF,,,,0,,,0,0.0,0,0,0.0,0,0,,LPAA
+VAI,2003-09-10,2003-10-31,36,BBG00J3Q25V9,Valor Energy Incorporated Common Stock,,,,0,,,0,0.0,0,0,0.0,0,0,,
+APACU,2023-12-12,2024-04-02,22,CIK__0002043630,StoneBridge Acquisition II Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,
+AACOU,2012-02-10,2012-10-15,21,CIK__0002099906,Abony Acquisition Corp. I Units,,,,0,,,0,0.0,0,0,0.0,0,0,,NNCpC
+FBYDP,2023-10-09,2023-11-06,18,CIK__0001937987,"Falcon's Beyond Global, Inc. 11% Series B Cumulative Convertible Preferred Stock",,,,0,,,0,0.0,0,0,0.0,0,0,,
+RIVr,2022-10-20,2022-11-07,13,BBG024BKJ582,"RiverNorth Opportunities Fund, Inc. Rights (expiring September 23, 2026)",,,,0,,,0,0.0,0,0,0.0,0,0,,
+BRKHU,2024-10-16,2024-12-17,9,CIK__0002098707,Burtech Acquisition Corp II Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,EVGR
+SPKLU,2025-04-01,2025-06-05,8,CIK__0001884046,Spark I Acquisition Corp. Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+BKHAU,2025-06-05,2025-06-17,4,CIK__0002000775,Black Hawk Acquisition Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,
+RFAIU,2025-04-14,2025-06-17,4,CIK__0002012807,RF Acquisition Corp II Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,EURK
+MDA,2017-10-05,2017-10-09,3,BBG0113JHT18,MDA Space Ltd.,,,,0,,,0,0.0,0,0,0.0,0,0,,MAXR
+TWLVU,2024-04-16,2024-04-30,3,CIK__0002052243,Twelve Seas Investment Company III Units,,,,0,,,0,0.0,0,0,0.0,0,0,,BLUA
+CRACU,2025-05-23,2025-05-23,1,CIK__0002070887,Crown Reserve Acquisition Corp. I Unit,,,,0,,,0,0.0,0,0,0.0,0,0,,
+LFACU,2023-09-15,2023-09-15,1,CIK__0002084563,Leapfrog Acquisition Corporation Units,,,,0,,,0,0.0,0,0,0.0,0,0,,FZT.U

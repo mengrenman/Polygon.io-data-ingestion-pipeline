@@ -176,6 +176,14 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
     which = tuple(t.strip() for t in args.tables.split(",") if t.strip())
     print(f"[1/3] Market tables {list(which)} -> {market_dir}" + (" (full refetch)" if args.full else " (incremental / resume)"))
     tables = pull_market_refdata(market_dir, fetch, since=args.since, full=args.full, tables=which)
+    if args.asof_dates:
+        from polygon_pullers.asof import annual_dates, pull_tickers_asof
+        from polygon_pullers.bulk import MARKET_TICKERS_ASOF
+        dates = (annual_dates(2004, pd.Timestamp.today().year - 1, extra=("2003-09-30",))
+                 if args.asof_dates.strip() == "annual" else [x.strip() for x in args.asof_dates.split(",") if x.strip()])
+        print(f"[1b] Point-in-time tickers on {len(dates)} date(s) (~11 requests each) -> {market_dir / MARKET_TICKERS_ASOF}")
+        asof = pull_tickers_asof(market_dir / MARKET_TICKERS_ASOF, fetch, dates)
+        print(f"  as-of rows: {len(asof)} over {asof['asof'].nunique()} date(s)")
     if "tickers" not in tables:
         raise SystemExit(f"no tickers table in {market_dir}; run with --tables tickers first")
     tk = tables["tickers"]
@@ -215,7 +223,8 @@ def _run_bulk(args, api_key: str, raw_tickers: List[str], outdir: Path) -> None:
         print("[2/3] No --probe-dates; recycled tickers are separated only where the previous company kept the symbol until delisting")
 
     print(f"[3/3] Deriving collection files -> {outdir}")
-    summary = derive_collection_refdata(market_dir, valid_tickers, outdir, extra_holders=extra)
+    summary = derive_collection_refdata(market_dir, valid_tickers, outdir, extra_holders=extra,
+                                        holder_lines=args.holder_lines)
     print(f"  security master rows: {summary['security_master_rows']} ({summary['multi_holder_tickers']} ticker(s) with >1 holder) | "
           f"splits: {summary['splits']} | dividends: {summary['dividends']} | missing tickers: {len(summary['missing'])}")
     if summary["missing"]:
@@ -285,6 +294,13 @@ def main():
                     help="Bulk mode: refetch all splits/dividends instead of an incremental refresh.")
     ap.add_argument("--events", action="store_true",
                     help="Bulk mode: also pull per-ticker ticker events (1 request per ticker) for symbol history.")
+    ap.add_argument("--asof-dates", type=str, default=None,
+                    help="Bulk mode: also pull market-wide point-in-time tickers (who held each symbol) on these "
+                         "comma-separated dates, or 'annual' (every June 30 from 2004, plus 2003-09-30); ~11 requests "
+                         "per date, resumable. Feeds scripts/build_holder_lines.py.")
+    ap.add_argument("--holder-lines", action="store_true",
+                    help="Bulk mode: derive with the point-in-time holder windows and re-filed splits/dividends that "
+                         "scripts/build_holder_lines.py wrote to --market-dir (symbols reused after the lake ends).")
     ap.add_argument("--tables", type=str, default="tickers,splits,dividends",
                     help="Bulk mode: which market tables to pull (comma-separated). Others are read from disk. "
                          "E.g. --tables dividends to finish an interrupted dividends pull without refetching tickers.")

@@ -36,6 +36,11 @@ Fetch = Callable[[str, Optional[dict]], dict]
 MARKET_TICKERS = "market_tickers.parquet"
 MARKET_SPLITS = "market_splits.parquet"
 MARKET_DIVIDENDS = "market_dividends.parquet"
+# point-in-time holders (polygon_pullers.asof; built by scripts/build_holder_lines.py)
+MARKET_TICKERS_ASOF = "market_tickers_asof.parquet"
+HOLDER_LINES = "holder_lines.parquet"
+MARKET_SPLITS_REFILED = "market_splits_refiled.parquet"
+MARKET_DIVIDENDS_REFILED = "market_dividends_refiled.parquet"
 
 TICKER_COLS = ["ticker", "name", "active", "type", "market", "locale", "primary_exchange", "currency_name",
                "cik", "composite_figi", "share_class_figi", "delisted_utc", "last_updated_utc"]
@@ -290,11 +295,17 @@ def pull_market_refdata(market_dir: str | Path, fetch: Fetch, *, since: Optional
 # Collection files derived from the market tables
 # --------------------------
 def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], outdir: str | Path,
-                              *, extra_holders: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+                              *, extra_holders: Optional[pd.DataFrame] = None,
+                              holder_lines: bool = False) -> Dict[str, Any]:
     """
     Filter the market tables to ``tickers`` and write ``security_master.parquet``, ``stock_splits.parquet``,
     ``cash_dividends.parquet`` (+ ``_missing_tickers.txt``) in the per-ticker pullers' schema.
     ``extra_holders`` (rows in SM_COLUMNS, e.g. from probe dates) are merged into the security master.
+
+    ``holder_lines``: also merge the point-in-time holder windows in ``holder_lines.parquet`` and take splits and
+    dividends from the re-filed tables beside it (each record under the symbol its company held on the event
+    date, with ``filed_ticker`` and ``refile_rule``). Both are written by scripts/build_holder_lines.py; see
+    docs/symbol-reuse-after-lake-end.md.
     """
     market_dir, outdir = Path(market_dir), Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -337,6 +348,18 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     })[SM_COLUMNS]
     if extra_holders is not None and len(extra_holders):
         sm = pd.concat([sm, extra_holders[SM_COLUMNS]], ignore_index=True)
+    if holder_lines:
+        from .asof import lines_to_security_master
+        missing_files = [f for f in (HOLDER_LINES, MARKET_SPLITS_REFILED, MARKET_DIVIDENDS_REFILED)
+                         if not (market_dir / f).exists()]
+        if missing_files:
+            raise FileNotFoundError(f"holder_lines=True needs {missing_files} in {market_dir}; "
+                                    f"run scripts/build_holder_lines.py first")
+        lines = pd.read_parquet(market_dir / HOLDER_LINES)
+        # a symbol with no record in today's table (retired, never reused) can still be named from the snapshots
+        uset = uset | (set(_clean_list(tickers)) & set(lines["ticker"]))
+        lines = lines[lines["ticker"].isin(uset)]
+        sm = pd.concat([sm, lines_to_security_master(lines)], ignore_index=True)
     # the 'current' source must win the descriptive fields in _dedupe_holders; market:active is current
     sm["holder_source"] = sm["holder_source"].replace({"market:active": "current"})
     sm = _dedupe_holders(sm)
@@ -351,14 +374,21 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
     elif amb_path.exists():
         amb_path.unlink()
 
-    spl = pd.read_parquet(market_dir / MARKET_SPLITS)
-    spl = spl[spl["ticker"].isin(uset)][["ticker", "execution_date", "split_from", "split_to", "ratio"]]
+    # `refile_holder_id` carries the re-filing decision to factor_builder, which otherwise keys an action by
+    # (ticker, date): Randgold's final dividend went ex on 2019-01-02, Barrick's first day on GOLD.
+    refiled_cols = ["filed_ticker", "refile_rule", "refile_holder_id"] if holder_lines else []
+    spl = pd.read_parquet(market_dir / (MARKET_SPLITS_REFILED if holder_lines else MARKET_SPLITS))
+    if holder_lines:
+        spl = spl.rename(columns={"holder_id": "refile_holder_id"})
+    spl = spl[spl["ticker"].isin(uset)][["ticker", "execution_date", "split_from", "split_to", "ratio"] + refiled_cols]
     spl = spl.sort_values(["ticker", "execution_date"]).reset_index(drop=True)
     spl.to_parquet(outdir / "stock_splits.parquet", index=False)
 
-    div = pd.read_parquet(market_dir / MARKET_DIVIDENDS)
+    div = pd.read_parquet(market_dir / (MARKET_DIVIDENDS_REFILED if holder_lines else MARKET_DIVIDENDS))
+    if holder_lines:
+        div = div.rename(columns={"holder_id": "refile_holder_id"})
     div = div[div["ticker"].isin(uset)].rename(columns={"ex_dividend_date": "ex_date"})
-    div = div[["ticker", "ex_date", "pay_date", "cash_amount", "declaration_date", "record_date", "frequency"]]
+    div = div[["ticker", "ex_date", "pay_date", "cash_amount", "declaration_date", "record_date", "frequency"] + refiled_cols]
     div = div.sort_values(["ticker", "ex_date"]).reset_index(drop=True)
     div.to_parquet(outdir / "cash_dividends.parquet", index=False)
 
