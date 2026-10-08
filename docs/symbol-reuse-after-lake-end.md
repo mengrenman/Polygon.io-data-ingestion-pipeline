@@ -1,9 +1,13 @@
 # Symbols reused after the lake ends: wrong holder ids and misfiled corporate actions
 
-Status, 2026-10-09: **measured; fix implemented behind an opt-in flag and tested; not yet run on the full
-market.** The full run needs a point-in-time snapshot pull of roughly 250 to 300 requests (about an hour at the
-Basic plan's 5 requests per minute), which waits for the owner's go-ahead, followed by a build-beside rebuild of
-`refdata/all` and `day_adj/all_adjusted`. Nothing in the lakes or the refdata has been changed.
+Status, 2026-10-09: **measured; fix implemented behind an opt-in flag and tested on fixtures and scratch
+outputs; not run on the real lake, and blocked from it.** No dataset under `/Users/mengren/local/parquet_lake`
+or the flat files may be built, re-derived, overwritten or copied until the owner decides how to proceed under
+Massive's license terms. Section 8 of the Market Data Terms requires deleting Market Data if the account is
+"terminated, restricted, or suspended"; see `docs/asset-class-expansion.md` §1 in
+[#26](https://github.com/mengrenman/Polygon.io-data-ingestion-pipeline/pull/26). After that decision the full run
+also needs a point-in-time snapshot pull of about 250 requests (about an hour at the Basic plan's 5 requests per
+minute), which waits for the owner's go-ahead. Nothing in the lakes or the refdata has been changed.
 
 Every number below comes from the real lake (`day/all`, `day_adj/all_adjusted`, `refdata/_market`, the
 `top1000_cs_monthly` universe) and is reproduced by `scripts/audit_symbol_holders.py` in about 40 seconds.
@@ -156,7 +160,9 @@ segment, with the id the lake gives it, is in [`flagged_segments.csv`](symbol-re
 ### 4.1 Point-in-time holders
 
 `GET /v3/reference/tickers?market=stocks&date=D` returns every symbol with the company that held it on `D`: a
-name always, a CIK on 91.5% of historical rows, a FIGI on 38.6% (measured on the first page for 2010-06-30). One
+name always, a CIK on 91.5% of historical rows, a FIGI on 38.6% (measured on the first page for 2010-06-30).
+It works on the current Basic plan: all 82 per-ticker lookups made for this audit returned a holder, from
+2003-10-08 to 2025-07-01, covering every one of the 30 member segments. One
 snapshot a year names the holder of nearly every trading segment. The switch day comes from the lake. New:
 `polygon_pullers.asof.pull_tickers_asof`, run as `run_pullers.py --bulk --asof-dates annual`. That pulls every
 June 30 from 2004 plus 2003-09-30, about 11 pages a date, into `refdata/_market/market_tickers_asof.parquet`. It
@@ -260,10 +266,12 @@ to the builder, and it does nothing unless the column is there.
 - Massive's filing rule is inferred from these cases, not documented. The report lists every record not filed
   as-is, so the inference is checked on every run.
 
-## 5. Rollout (waits for the owner's go-ahead on the pull)
+## 5. Rollout (blocked: the owner's license decision first, then the go-ahead for the pull)
 
-Build beside, verify, swap, keep the prior build. Pin the code to this branch: the editable install follows the
-main checkout. Export `POLYGON_API_KEY` first; `scripts/pull_ref_data.sh` loads it from `.env`, but these steps
+**None of this may run until the owner lifts the gate on building or copying datasets** (see the status line).
+Step 1 also writes a new table into `refdata/_market`, so it is gated along with the builds, not just by its
+request count. When the gate lifts, the plan is: build beside, verify, swap, keep the prior build. Pin the code
+to this branch: the editable install follows the main checkout. Export `POLYGON_API_KEY` first; `scripts/pull_ref_data.sh` loads it from `.env`, but these steps
 call the Python entry points directly.
 
 ```bash

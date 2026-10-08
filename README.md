@@ -401,7 +401,8 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
   cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
   This covers reuse *inside* the lake after a gap of 60 days or more only; see the next entry.
-- **Symbols reused after the lake ends — measured; fix ready, not yet applied.** The security master
+- **Symbols reused after the lake ends — measured; fix ready, not applied (lake builds are on hold pending
+  the license question in `docs/asset-class-expansion.md` §1).** The security master
   names each symbol's *current* company, so a symbol that stopped trading inside the lake and was reused
   later keeps one segment and today's id: `ABX`'s Barrick Gold bars (2003–2018) carry Abacus Global
   Management's. 416 segments, 490,110 rows, 1,770 of 262,000 universe member-months. Massive also files a
