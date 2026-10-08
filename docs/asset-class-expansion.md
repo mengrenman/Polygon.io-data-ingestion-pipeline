@@ -9,6 +9,10 @@ Starter is enough to take it (§3); futures need Advanced, not Developer, for fu
 indices change to skip (§5); Benzinga follows the plan (§6); the order is rebuilt (§7). A re-read of
 Massive's docs on 2026-10-05 corrected the futures tier and the indices depth wording.*
 
+*Revised 2026-10-09: the account is Basic on every asset class, read from the dashboard, so the
+day-1 purchase is needed (§1); per-day options quote sizes from the vendor's file browser (§2); a
+2022-onward IV pilot from Massive's own quotes (§3); the live futures venue list (§4).*
+
 **Status: a plan, not implemented.** Nothing in this repository ingests options, futures or indices
 today. This document records what the vendor actually sells, what it costs, what the existing
 pipeline would and would not reuse, and the order the work should happen in.
@@ -47,7 +51,7 @@ forbid redistribution. **(verified)**
 
 | asset class | tiers | recommendation | owner's month plan |
 |---|---|---|---|
-| **Stocks** (+ Financials add-on) | $0 / **$29** / $79 / $199; Financials & Ratios $29, or included in Advanced | **First: Starter $29 + Financials $29 = $58.** Developer (trades) or Advanced (quotes) only when that work exists. Check the account first (below). | **Day 1: Starter + Financials ($58) by default.** |
+| **Stocks** (+ Financials add-on) | $0 / **$29** / $79 / $199; Financials & Ratios $29, or included in Advanced | **First: Starter $29 + Financials $29 = $58.** Developer (trades) or Advanced (quotes) only when that work exists. The account is Basic today (below). | **Day 1: Starter + Financials ($58) by default.** |
 | **Options** | $0 / $29 / $79 / **$199** | **Advanced $199** for the archive: only Advanced reaches 2014-06-02 (Starter 2 years, Developer 4). Nothing forces it now if the docs' all-history reading holds (pricing page says 5+ years; conflict note below). **Starter $29** is enough for a snapshot collector (§3). | Not this month. |
 | **Futures** | $0 / $29 / $79 / **$199** | **Advanced $199** for full 2017+ history; Developer $79 is a 5-year window. No deadline if the docs' all-history reading holds (pricing page says 7+ years); confirm the first file on the first listing. Caveats in §4. | Not this month. |
 | **Indices** | $0 / $49 / $99 | **Skip** until a live use exists, then Starter $49. Reasoning in §5. | Declined. |
@@ -97,11 +101,9 @@ the underlying; an event study needs returns around every announcement), so they
   quotes need Advanced ($199, all history from 2003-09-10). **(verified)** The plan holds that work
   (primary-exchange close, adverse selection) behind an open question, so no month-one work needs
   either.
-- **Does the account already hold Stocks Advanced?** The plan says "Keep Advanced", and the
-  2026-09-15 tier note says "keep Stocks Advanced"; both read as if Advanced were live. The
-  observations below point the other way. The dashboard settles it on day 1. If Advanced is live,
-  the refresh needs no purchase at all, and moving down to Starter gives up re-downloading files
-  older than about 2021-10, which would then exist only on local disk. **(estimate)**
+- **The account does not hold Stocks Advanced.** The plan says "Keep Advanced" and the 2026-09-15
+  tier note says "keep Stocks Advanced", but the dashboard shows Basic on every asset class (below).
+  The day-1 purchase is needed, and the refresh cannot start without it.
 - **Financials are REST, not flat files, and `filing_date` is not a point-in-time date.**
   Statements run from 2009-03-29 with `period_end` and `filing_date`. **(verified)** The docs
   define `filing_date` as the most recent SEC filing that included the period's data, "not
@@ -116,25 +118,22 @@ the underlying; an event study needs returns around every announcement), so they
   unlimited. **(verified)** It is counted per asset class, so a paid Options plan would leave stock
   REST pulls at 5/minute. **(single source)**
 
-### Worth checking on the account first
+### The account today
 
-Three observations about this account that the tier grid does not explain together:
+Read from the dashboard's Plans & Upgrades page on 2026-10-09: **Stocks, Options, Futures, Indices
+and Currencies are all Basic, $0/month**, individual, with no add-ons — no Financials & Ratios and no
+Benzinga dataset. That explains the two observations made earlier with the API key in the repo `.env`:
 
-- The lake holds 22 years of equity flat files, ending 2025-08-13 (paths above). Only Stocks
-  Advanced reaches back to 2003-09-10; Developer reaches 10 years. **(verified)**
-- The API key in the repo `.env` was rate-limited to 5 requests/minute during the September
-  reference-data pulls, which call stock endpoints (recorded 2026-09-17). **(single source)** That
-  is the Basic signature, and Basic includes no flat files at all. **(verified)**
-- A call to `/v3/snapshot/options/AAPL` with the same key returned `403 NOT_AUTHORIZED` on
-  2026-09-21. **(single source)** It fits an account with no Options entitlement: the snapshot
+- It was rate-limited to 5 requests/minute during the September reference-data pulls (recorded
+  2026-09-17): the Basic limit. **(verified)**
+- A call to `/v3/snapshot/options/AAPL` returned `403 NOT_AUTHORIZED` on 2026-09-21: the snapshot
   endpoints are not included on Options Basic. **(verified)**
 
-A plausible explanation is that a paid plan, presumably Advanced as the only tier reaching 2003,
-lapsed around August 2025, after the bulk download — which would also explain why the files stop on
-2025-08-13. **(estimate)** Competing explanations fit the same facts: a different key from the one
-used for the download, a download made during a trial or on another account, or tier depths that
-differed at download time. The dashboard and billing history settle it; check them before buying
-anything, since a live Advanced plan changes the day-1 purchase.
+Basic includes **no flat files at all** **(verified)**, so the equity refresh needs at least Stocks
+Starter plus S3 access keys from the dashboard, which are separate from the API key. The 22 years
+of flat files on disk (ending 2025-08-13) reach back to 2003-09-10, which only Stocks Advanced
+covers, so they came from an earlier paid plan or another route; the billing history, not yet
+read, would say which. **(estimate)**
 
 ---
 
@@ -148,10 +147,16 @@ Options **quotes** flat files, read from Massive's file browser: **(verified)**
 | 2023 | 22.3 TB |
 | 2024 | 23.5 TB |
 | 2025 | 30.1 TB |
-| 2026 (partial) | 24.3 TB |
+| 2026 (partial) | 25.9 TB as of 2026-10-09 (24.3 TB on 2026-09-21) |
 
 Roughly **120 TB**. Options **trades**, by contrast, are **9.0–13.5 GB/year**. **(verified)** Three
 orders of magnitude apart.
+
+**Per day**, each session is one whole-market `.csv.gz`. June 2025's 20 files run **91.7–132 GB**,
+mean 105 GB, read from the file browser on 2026-10-09. **(verified)** The yearly totals average
+about 90–95 GB/day for 2022–2024, about 120 GB/day for 2025 and about 130 GB/day for 2026 so far.
+**(estimate)** There is no way to fetch only part of a day: a study that needs the close downloads
+the whole file.
 
 Day and minute aggregate sizes are **not published** — the docs pages carry schemas and history
 dates but no file sizes. **(verified)** Measure them with `ListObjectsV2` over the prefix before
@@ -284,6 +289,26 @@ plus underlying prices, rates and dividends. **(estimate)** The caveats decide h
   those are realized, ex-post amounts, not the ex-ante yield Massive uses. That is fine for ex-post
   greeks but a look-ahead if used as the market's expectation. **(estimate)**
 
+**A 2022-onward IV pilot from Massive's own quotes is viable** as a first options study, so Massive
+is the wrong vendor only for implied volatility before 2022, or for IV that arrives already computed.
+What it takes and what it lacks: **(estimate)**
+
+- **Cost:** Options Advanced ($199/month) for as long as the pull runs, and about **122 TB** of
+  download for 2022-03-07 to 2026-10 (§2), since each day comes whole. At about 100 MB/s that is
+  roughly two weeks of continuous transfer; at 100 Mbit/s, months. Storage stays small if each day
+  is reduced to a near-close snapshot and then deleted.
+- **Work:** an IV engine built and validated here, with American exercise, dividends and rates, as
+  above. `mcp_massive` does not provide one (below).
+- **Limits:** about 4.6 years is roughly 55 monthly or 240 weekly cross-sections: enough for a large
+  effect, thin for one that decayed after publication. No 2008 or 2020 stress regime, and no
+  open-interest history at all.
+- **An untested middle path:** Advanced also serves quotes per contract over REST. Querying only the
+  contracts a signal uses (for example at-the-money and 25-delta near 30 days), in a window near the
+  close, might avoid the full download. Its throughput has not been checked.
+
+For IV history before 2022, or IV that is already computed and checked, the vendors listed under
+open interest below are the sources.
+
 **What `mcp_massive` ships** (read from source at commit `c58ec7e`, 2026-05-05 **(single source)**):
 eleven closed-form **Black-Scholes** functions — price, delta, gamma, theta, vega, rho, vanna,
 volga, charm, veta and color — callable through the `apply` parameter of its `call_api` and
@@ -300,9 +325,9 @@ snapshotted on the day. Every day without a stored snapshot is a day of Massive-
 interest that cannot later be bought. **Options Starter ($29)** is the first tier with the snapshot
 endpoints — 15-minute delayed on Starter and Developer, real-time only on Advanced, whatever the
 pricing card's "Real-time Greeks and IV" bullet implies **(verified)** — so the collector needs only
-Starter and is **decoupled from the archive purchase**. This key could not call the snapshot on
-2026-09-21 (§1). Start it before the ingestion work only *if open interest history is wanted from
-Massive*.
+Starter and is **decoupled from the archive purchase**. The account is Options Basic today, so it
+cannot call the snapshot (§1). Start the collector before the ingestion work only *if open interest
+history is wanted from Massive*.
 
 The collector is a small service, not a script: a daily history means one paginated chain snapshot
 per live underlying (up to ~5,000, the all-history count above) every trading day, with storage and
@@ -321,9 +346,11 @@ be the open-interest source.
 
 - Four exchanges (CME, CBOT, COMEX, NYMEX), each with minute aggregates, session aggregates, quotes
   and trades. **(verified)**
-- **Cboe's VX futures (CFE) do not appear in Massive's coverage**, which lists four CME Group
-  exchanges only. No Massive page names CFE or VX, so this is not an explicit exclusion.
-  **(estimate)**
+- **Cboe's VX futures (CFE) are not covered.** Flat files exist only for the four CME Group
+  exchanges, and no docs page names CFE or VX. The live `GET /futures/v1/exchanges` (free on
+  Futures Basic, called 2026-10-09) lists 16 venues, not 4: the four, plus CME Globex partner and
+  spread venues such as MGEX, BrokerTec, KRX, Bursa Malaysia and CME Amsterdam. None of them is CFE
+  (MIC `XCBF`). **(verified)** No page states the exclusion outright; this is coverage by absence.
 - Minute aggregates carry `session_end_date`, `exchange` and `dollar_volume` — so **the vendor has
   already solved the 23-hour-session date problem**; this pipeline does not need to invent a session
   rule, only to stop using the equity ET-calendar-date rule, which would silently misfile a Sunday
@@ -486,7 +513,7 @@ only". **(verified)**
 
 | phase | work | why here |
 |---|---|---|
-| 0 | **Stocks purchase** (Starter plus Financials by default; check the account first, §1) and the **equity refresh, 2025-08-14 onward**: day and minute lakes, adjusted lake, universe. Needs S3 credentials from the dashboard | Every lake, the universe and every study end 2025-08-13; options and earnings work need underlying prices through the present; existing code, unchanged, and the September review findings the plan gates it on are closed (§1) |
+| 0 | **Stocks purchase** (Starter plus Financials; the account is Basic everywhere today, §1) and the **equity refresh, 2025-08-14 onward**: day and minute lakes, adjusted lake, universe. Needs S3 access keys from the dashboard | Every lake, the universe and every study end 2025-08-13; options and earnings work need underlying prices through the present; existing code, unchanged, and the September review findings the plan gates it on are closed (§1) |
 | 1 | **Financials and Benzinga Earnings ingestion** (REST) | A new pattern for this repo — paginated REST with incremental state and resume, no flat files. Ingestion does not wait on phase 0; the earnings rows use phase 0's prices if the refresh lands by 7 October, otherwise they run on the stale panel and are re-run in month two (plan Decision 2; §6) |
 | 2 | Options snapshot collector — **if open interest history is wanted from Massive** (Options Starter, $29) | Open interest is the one options series that cannot be derived or bought back from Massive; every day not snapshotted is lost. Greeks and IV are not (§3). A small service, not a script: one paginated chain call per underlying per day, with phase 1's incremental-state REST pattern. Independent of the phases below |
 | 3 | When options work starts: Advanced; measure the aggregate prefixes | Sizes are unpublished; nothing forces the purchase earlier on the docs' all-history reading (§1) |
