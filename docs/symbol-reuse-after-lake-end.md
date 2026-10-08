@@ -271,8 +271,8 @@ to the builder, and it does nothing unless the column is there.
 **None of this may run until the owner lifts the gate on building or copying datasets** (see the status line).
 Step 1 also writes a new table into `refdata/_market`, so it is gated along with the builds, not just by its
 request count. When the gate lifts, the plan is: build beside, verify, swap, keep the prior build. Pin the code
-to this branch: the editable install follows the main checkout. Export `POLYGON_API_KEY` first; `scripts/pull_ref_data.sh` loads it from `.env`, but these steps
-call the Python entry points directly.
+to this branch: the editable install follows the main checkout. Export `POLYGON_API_KEY` first;
+`scripts/pull_ref_data.sh` loads it from `.env`, but these steps call the Python entry points directly.
 
 ```bash
 export POLYGON_MIN_INTERVAL_SEC=12.5 PYTHONPATH="$PWD/src"
