@@ -10,7 +10,8 @@ indices change to skip (§5); Benzinga follows the plan (§6); the order is rebu
 Massive's docs on 2026-10-05 corrected the futures tier and the indices depth wording.*
 
 *Revised 2026-10-09: the joint purchase recommendation agreed with the strategy-lab session (below);
-the account is Basic on every asset class, read from the dashboard, so the day-1 purchase is needed (§1); per-day options quote sizes from the vendor's file browser (§2); a
+the account is Basic on every asset class, read from the dashboard, so the day-1 purchase is needed (§1);
+Massive's license terms on deleting data, and a probe showing Basic's reference history cap is not enforced (§1); per-day options quote sizes from the vendor's file browser (§2); a
 2022-onward IV pilot from Massive's own quotes (§3); the live futures venue list (§4).*
 
 **Status: a plan, not implemented.** Nothing in this repository ingests options, futures or indices
@@ -192,18 +193,49 @@ the underlying; an event study needs returns around every announcement), so they
 
 Read from the dashboard's Plans & Upgrades page on 2026-10-09: **Stocks, Options, Futures, Indices
 and Currencies are all Basic, $0/month**, individual, with no add-ons — no Financials & Ratios and no
-Benzinga dataset. That explains the two observations made earlier with the API key in the repo `.env`:
+Benzinga dataset. Observations with the API key in the repo `.env`:
 
-- It was rate-limited to 5 requests/minute during the September reference-data pulls (recorded
-  2026-09-17): the Basic limit. **(verified)**
 - A call to `/v3/snapshot/options/AAPL` returned `403 NOT_AUTHORIZED` on 2026-09-21: the snapshot
   endpoints are not included on Options Basic. **(verified)**
+- The September reference-data pulls ran at 12.5 s per request, but that pace was set by the client
+  (`POLYGON_MIN_INTERVAL_SEC` in `scripts/pull_ref_data.sh`), and the logs show no HTTP 429. So
+  Basic's documented 5 requests/minute was never actually observed. An earlier revision of this
+  section said it was; that was wrong.
+- **Basic's documented 2-year history cap is not enforced on the v3 reference endpoints.** Probed on
+  2026-10-09 with this Basic key: `/v3/reference/splits` returned history from 1978-10-25 and
+  `/v3/reference/dividends` from 2000-08-15. **(verified)** So Basic suffices for reference
+  refreshes. And `/v3/reference/tickers?ticker=ABX&date=2010-01-04` returned BARRICK GOLD CORP
+  (`BBG000BB07P9`): point-in-time holders are available on Basic, which matters for symbols reused
+  after the lake's end (README, Known data issues). **(verified)** The cap may yet be enforced
+  later; this is what the endpoints returned on that date.
 
 Basic includes **no flat files at all** **(verified)**, so the equity refresh needs at least Stocks
 Starter plus S3 access keys from the dashboard, which are separate from the API key. The 22 years
 of flat files on disk (ending 2025-08-13) reach back to 2003-09-10, which only Stocks Advanced
 covers, so they came from an earlier paid plan or another route; the billing history, not yet
 read, would say which. **(estimate)**
+
+### Massive's license terms and the files on disk
+
+Read from the Market Data Terms (https://massive.com/legal/market-data-terms-of-service, last
+updated 2025-08-28) on 2026-10-09: **(verified)**
+
+- **§8, effect of termination:** if the agreement or the account is "terminated, restricted, or
+  suspended for any reason", the user must "cease all use of the Market Data and delete all Market
+  Data in your possession."
+- **§2:** Market Data is "strictly for display use only" unless a subsequent agreement says
+  otherwise. Its ban on mirroring is qualified: mirroring "to any other computer, server, website,
+  or other medium for publication or distribution".
+- **§5(d):** no non-display use and no derivative works "unless you are licensed to do so".
+
+Three questions follow, and none is answerable from the page: whether a downgrade to Basic counts as
+a "restriction" that triggers §8 for files fetched under an earlier paid plan; whether personal
+backtesting is "non-display use"; and whether the adjusted lakes and research outputs are
+"derivative works". They decide whether the 22 years on disk are owned or rented, so they need
+Massive's answer in writing before any further build on those files. The strategy-lab data
+contract carries this as an open question for the owner. By published terms, among the vendors
+reviewed on 2026-10-09 only Kibot, Portara (one-off purchase) and FirstRate (per its FAQ) allow
+keeping downloaded data after a subscription ends.
 
 ---
 
