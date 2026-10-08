@@ -9,8 +9,8 @@ Starter is enough to take it (§3); futures need Advanced, not Developer, for fu
 indices change to skip (§5); Benzinga follows the plan (§6); the order is rebuilt (§7). A re-read of
 Massive's docs on 2026-10-05 corrected the futures tier and the indices depth wording.*
 
-*Revised 2026-10-09: the account is Basic on every asset class, read from the dashboard, so the
-day-1 purchase is needed (§1); per-day options quote sizes from the vendor's file browser (§2); a
+*Revised 2026-10-09: the joint purchase recommendation agreed with the strategy-lab session (below);
+the account is Basic on every asset class, read from the dashboard, so the day-1 purchase is needed (§1); per-day options quote sizes from the vendor's file browser (§2); a
 2022-onward IV pilot from Massive's own quotes (§3); the live futures venue list (§4).*
 
 **Status: a plan, not implemented.** Nothing in this repository ingests options, futures or indices
@@ -30,6 +30,76 @@ pages disagree with each other, the text says so and uses the docs' plan-history
 > **Massive is Polygon.io.** The rebrand completed 2025-10-30 — same company, same account, same
 > endpoints, same S3 flat files. Existing SDKs and URLs keep working, so this is buying entitlements
 > on the account this pipeline already uses, not integrating a new vendor.
+
+---
+
+## Joint purchase recommendation (2026-10-09)
+
+Recorded verbatim, as agreed with the strategy-lab session, which records the same text in
+`ML_Alpha_Research/strategy-lab/docs/plan-2026-09-30-month.md`. The sections below hold the evidence.
+
+Joint recommendation on the Massive purchase, agreed by the strategy-lab and pipeline sessions on
+2026-10-09. The account is Basic on every asset class with no add-ons (dashboard, read 2026-10-09).
+Vendor facts were read on Massive's pages on 2026-10-05 and 2026-10-09 and must be confirmed on the
+dashboard at purchase.
+
+1. **Stocks:** Starter ($29). Day and minute flat files for five years cover the refresh from
+   2025-08-14; unlimited API calls; all five reference endpoints the pipeline calls (tickers, ticker
+   details, splits, dividends, ticker events) with all history. Caveats: the v3 splits and dividends
+   endpoints are marked deprecated without a date, so the refresh stays on v3 and any migration is a
+   separate pipeline task with a diff first; ticker events is marked experimental; Starter cannot
+   re-download flat files older than about 2021-10, so the 2003-2021 files on disk are the only
+   copies the account can reach and are kept. Upgrade to Advanced ($199) only when a frozen
+   specification needs quotes or auction prints, for the months the pull runs.
+2. **Financials add-on ($29):** buy on day 1 for one month of measurement, not for features. The
+   EDGAR filings index endpoint is in every Stocks plan and gives the original filing date; SEC's
+   free XBRL API gives each value as first reported with accession number and filed date. In month
+   one, on about 50 companies across 2009-2025, compare Massive's filing_date with the EDGAR
+   original date and Massive's values with SEC's first-reported values. The fundamentals
+   specification then names its source and as-of rule; if SEC XBRL serves, the add-on is dropped
+   after month one.
+3. **Benzinga Earnings ($99):** buy on day 1. Week-1 checks: share of announcements with a non-null
+   time by year (labeled EST, ambiguous in summer); delisted coverage (AABA, ABGX, ABFS; 51% of the
+   universe's members are no longer active); whether a historical query returns the original or the
+   current record (docs silent; ask support), with estimate and surprise treated as possibly
+   look-ahead until answered. Identifier rule settled in the data contract before any row: exact
+   ticker spelling first, case-insensitive only when unambiguous, then the holder id from the
+   security master as of the announcement date, with segment ids for recycled symbols.
+4. **Benzinga News ($99):** not now; after the text specification is frozen.
+5. **Options:** no Massive purchase now. Flat files carry no IV, Greeks or open interest; quotes from
+   2022-03-07 at about 90 to 130 GB a day; open interest only as a live snapshot. Massive is the
+   wrong source for pre-2022 IV history, ready-made IV and open-interest history. A 2022-onward
+   pilot from its quotes is viable for a study that tolerates about 4.6 years, with Options Advanced
+   for the pull and an American-option IV engine built and validated by us. Order: choose the
+   strategies, price ORATS and Cboe DataShop (and OptionMetrics if institutional access exists),
+   then decide between a vendor and the pilot.
+6. **Futures:** no. From 2017-04-03, data products for the four CME Group exchanges only, no Cboe VX.
+   VIX and related regime series free from Cboe and FRED.
+7. **Indices and currencies:** no. Indices start 2023-02-14 on every tier; nothing in the audit needs
+   currencies.
+8. **Billing and sequence:** monthly; $157 a month from day 1, $256 once News is added. Day 1: the
+   owner buys the plans and creates S3 access keys (separate from the API key). The pipeline then
+   runs: one-off S3 download of day and minute flat files from 2025-08-14 (no downloader in the
+   repo; files placed on disk); full re-pull of tickers, splits, dividends and ticker events on v3;
+   security master re-derived; day and minute ingested into new builds; a FULL adjusted rebuild; the
+   point-in-time universe rebuilt; notebook 04's checks re-run. Each lake built beside the old one,
+   verified, swapped, prior build kept; the pipeline reports paths and row counts; strategy-lab
+   re-derives its panel and records a new data_version. The week-1 refresh and the 7 October cutoff
+   have passed, so the earnings rows run on the 2025-08-13 panel and are re-run in month two.
+9. **Not claimed:** origin of the 22 years of flat files (billing history unread); Financials
+   filing_date behavior on live data; Benzinga's base-plan requirement (moot), delisted coverage and
+   revision behavior; a removal date for the v3 endpoints; that the lower tiers' "N years" is a
+   rolling window (an inference); ORATS, Cboe DataShop and OptionMetrics prices and licensing; SEC's
+   API usage terms. The strategy-lab session's independent check of the options facts was still
+   running when this was agreed; any difference is sent to the pipeline session and recorded as an
+   amendment.
+
+**Pipeline-side note on point 2, sent to strategy-lab as a proposed amendment (2026-10-09).** SEC
+XBRL coverage is phased in: about 500 of the largest filers (public float above $5 billion) begin
+with periods ending on or after 2009-06-15, and all U.S. public companies by December 2011 (SEC press
+release 2008-300). **(verified)** Massive's statements start 2009-03-29. So the month-one
+comparison should stratify by company size and year, and for 2009-2011 small and mid caps SEC has
+no first-reported values: a fundamentals panel would need Massive there, or start in 2011 for them.
 
 ---
 
