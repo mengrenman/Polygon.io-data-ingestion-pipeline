@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Optional, List, Iterable, Tuple, Dict, Any
 
@@ -252,6 +253,13 @@ def _naive_dates(x: pd.Series) -> pd.Series:
     return d.dt.tz_convert(None).dt.normalize().dt.as_unit("ns")
 
 
+# holder_source values whose effective_end is the vendor's delisting date (the tickers list, a details lookup,
+# a probe lookup) rather than an observed symbol change. Such an end is a claim until the ticker's own bars back
+# it (_confirm_ends_by_bars): Polygon ends CMCSK on 2012-12-14 and Comcast traded it until 2015. Masters derived
+# before 2026-10 marked these ends confirmed; they are read as unconfirmed whatever the flag says.
+_VENDOR_END_SOURCES = ("market:", "current", "probe:")
+
+
 def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
     """
     Security master -> one row per (ticker, holder_id) with the holder's window [effective_start, effective_end]
@@ -267,6 +275,9 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
         s[c] = _naive_dates(s[c]) if c in s.columns else pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
     for c in ("start_confirmed", "end_confirmed"):
         s[c] = s[c].fillna(False).astype(bool) if c in s.columns else False
+    if "holder_source" in s.columns:
+        vendor = s["holder_source"].astype("string").str.startswith(_VENDOR_END_SOURCES).fillna(False)
+        s.loc[vendor.to_numpy(dtype=bool), "end_confirmed"] = False
     hid = s["holder_id"].astype("string")
     need = (hid.isna() | (hid.str.strip() == "")).to_numpy()
     s.loc[need, "holder_id"] = [_holder_id(f, k, t) for f, k, t in
@@ -369,6 +380,40 @@ def _recycled_segments(tickers, days, sm: pd.DataFrame, gap_days: int = RECYCLE_
     return segs.reset_index(drop=True)
 
 
+def _confirm_ends_by_bars(sm: pd.DataFrame, tickers, days, gap_days: int = RECYCLE_GAP_DAYS) -> Tuple[pd.DataFrame, set]:
+    """Confirm a single holder's unconfirmed end where the ticker's own bars show it stopped there.
+
+    A vendor delisting date is a claim. Polygon ends CMCSK (Comcast Class A Special) on 2012-12-14 and the
+    symbol printed a bar every session until 2015; trusting the date moved 753 later rows to
+    'NOFIGI__CMCSK', which anchors its own factors, so `close_tr` jumped 8.2% on a day `close` moved 2.5%.
+    The bars confirm an end when the ticker printed nothing for `gap_days` or more after its last bar on or
+    before it (counted from the end itself if no bar precedes it), or never traded after it: the same
+    evidence `_price_segments` takes for a new owner. Ends from ticker events stay confirmed as they are.
+
+    Reads only the bars it is given, like the segment cut, so build the adjusted lakes in full. Returns the
+    normalized master and the tickers whose end it confirmed; `gap_days <= 0` confirms nothing.
+    """
+    smn = _normalize_sm(sm)
+    if smn.empty or gap_days <= 0:
+        return smn, set()
+    n = smn.groupby("ticker")["holder_id"].nunique()
+    cand = smn[smn["ticker"].map(n).eq(1) & smn["effective_end"].notna() & ~smn["end_confirmed"]]
+    if cand.empty:
+        return smn, set()
+    t = np.asarray(tickers, dtype=object)
+    keep = pd.Series(t).isin(set(cand["ticker"])).to_numpy()
+    d = pd.DataFrame({"ticker": t[keep], "d": pd.to_datetime(np.asarray(days)[keep]).normalize()}).drop_duplicates()
+    end = cand.set_index("ticker")["effective_end"]
+    m = d.merge(end.rename("end").reset_index(), on="ticker")
+    last_on = m.loc[m["d"] <= m["end"]].groupby("ticker")["d"].max().reindex(end.index)
+    first_after = m.loc[m["d"] > m["end"]].groupby("ticker")["d"].min().reindex(end.index)
+    gap = (first_after - last_on.fillna(end)).dt.days
+    ok = gap.isna() | (gap >= int(gap_days))
+    confirmed = set(ok.index[ok.to_numpy()])
+    smn.loc[smn.index.isin(cand.index) & smn["ticker"].isin(confirmed), "end_confirmed"] = True
+    return smn, confirmed
+
+
 def _segment_lookup(segs: pd.DataFrame):
     """(ticker -> (starts, ends, ids)) for fast containment tests."""
     out = {}
@@ -409,10 +454,11 @@ def _assign_holder_ids(df: pd.DataFrame, sm: pd.DataFrame, date_col: str) -> pd.
 
     - ticker unknown to the SM             -> 'NOFIGI__<TICKER>'
     - one holder (one distinct id)         -> that id for every row, whatever the date, EXCEPT rows before a
-      CONFIRMED start or after a CONFIRMED end (a real ticker change / delisting from ticker events), which go
-      to 'NOFIGI__<TICKER>' (unknown previous/next holder) rather than to a company that did not hold the
-      symbol then. An imprecise list_date is never confirmed, so it can never split one company's history
-      (each id anchors its adjustment factors to its own last day, so a spurious split breaks continuity).
+      CONFIRMED start or after a CONFIRMED end (a real ticker change from ticker events, or a vendor delisting
+      date the bars back - see _confirm_ends_by_bars), which go to 'NOFIGI__<TICKER>' (unknown previous/next
+      holder) rather than to a company that did not hold the symbol then. An imprecise list_date or delisting
+      date is never confirmed on its own, so it can never split one company's history (each id anchors its
+      adjustment factors to its own last day, so a spurious split breaks continuity).
     - several holders (a recycled ticker)  -> the holder whose bounded window contains the date; a holder with
       no known dates (found by probing a date) takes what bounded holders don't claim; else the nearest window.
       Ties: the later effective_start.
@@ -491,6 +537,34 @@ def _apply_event_segments(events: pd.DataFrame, segs: pd.DataFrame, date_cols) -
             e[col] = _apply_segment_ids(e[col].astype(object), _norm_ticker(e["ticker"]).to_numpy(),
                                         _naive_dates(e[dcol]), segs)
     return e
+
+
+def _rekey_events(events: pd.DataFrame, sm: pd.DataFrame, tickers: set, date_cols) -> pd.DataFrame:
+    """Recompute the holder id of the corporate actions of `tickers` against `sm` (others keep theirs)."""
+    if not tickers or events.empty or "holder_id" not in events.columns:
+        return events
+    hit = _norm_ticker(events["ticker"]).isin(tickers).to_numpy()
+    if not hit.any():
+        return events
+    e = events.copy()
+    e.loc[hit, "holder_id"] = _assign_event_ids(e.loc[hit], sm, date_cols)["holder_id"].to_numpy()
+    return e
+
+
+def _key_by_bars(tickers, days, sm: pd.DataFrame, spl: pd.DataFrame, div: pd.DataFrame,
+                 gap_days: int = RECYCLE_GAP_DAYS):
+    """What the bars decide about holder ids, once per build: which vendor ends are real
+    (_confirm_ends_by_bars) and which trading segments predate a symbol's current holder (_recycled_segments).
+    Corporate actions are re-keyed to match, so each lands on the id its ticker's bars carry on its date.
+    `spl`/`div` must already carry holder ids (_assign_event_ids). Returns (sm, segments, spl, div)."""
+    sm, confirmed = _confirm_ends_by_bars(sm, tickers, days, gap_days)
+    spl = _rekey_events(spl, sm, confirmed, ["execution_date"])
+    div = _rekey_events(div, sm, confirmed, ["ex_date", "ex_dividend_date"])
+    segs = _recycled_segments(tickers, days, sm, gap_days)
+    if len(segs):
+        spl = _apply_event_segments(spl, segs, ["execution_date"])
+        div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+    return sm, segs, spl, div
 
 
 def _event_ids(df: pd.DataFrame) -> np.ndarray:
@@ -1343,18 +1417,45 @@ def _build_dividend_factors_from_days(id_days: pd.DataFrame, div: pd.DataFrame, 
 # Streaming helpers (minute mode, MARKET layout: <root>/<YYYY>/<MM>/<DD>.parquet, all tickers per file)
 # =============================================================
 ROW_GROUP_SIZE_MARKET = 131_072
+SIDECAR_PAIR_KEY = b"polygon_ingest.sidecar_pair"     # must agree with polygon_ingest.ingest.SIDECAR_PAIR_KEY
 
 def _day_index(df: pd.DataFrame) -> pd.DataFrame:
     """Per-ticker index of a ticker-major minute day file: first/last close, row count and row positions.
-    Mirrors polygon_ingest.ingest.day_index (kept local so this script stays standalone)."""
+    Mirrors polygon_ingest.ingest.day_index (kept local so this script stays standalone), including the check
+    that the ranges cover every row: groupby drops null keys, so callers drop rows without a ticker first."""
     pos = np.arange(len(df))
     g = pd.DataFrame({"ticker": df["ticker"].to_numpy(), "close": df["close"].to_numpy(), "_pos": pos}).groupby("ticker", sort=True)
     idx = g.agg(first_close=("close", "first"), last_close=("close", "last"), n_rows=("close", "size"),
                 row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
+    if int(idx["n_rows"].sum()) != len(df):
+        raise ValueError(f"sidecar would cover {int(idx['n_rows'].sum()):,} of {len(df):,} rows "
+                         f"({int(df['ticker'].isna().sum()):,} without a ticker)")
     return idx
 
 def _index_path(day_file: Path) -> Path:
     return day_file.with_name(day_file.stem + ".idx.parquet")
+
+def _sidecar_matches(day_file: Path, ip: Path) -> bool:
+    """The sidecar describes this version of the day file: the same pair token in both footers (none in either
+    for pairs written before 2026-10) and ranges covering every row. Mirrors polygon_ingest.lake_io.read_day_index."""
+    md, mi = _pq.read_metadata(day_file), _pq.read_metadata(ip)
+    if (md.metadata or {}).get(SIDECAR_PAIR_KEY) != (mi.metadata or {}).get(SIDECAR_PAIR_KEY):
+        return False
+    return int(_pq.read_table(ip, columns=["n_rows"]).column("n_rows").to_numpy().sum()) == md.num_rows
+
+def _write_with_sidecar(table: pa.Table, outpath: Path, index: pd.DataFrame) -> None:
+    """Data file and sidecar to temp names with one token in both footers, then: drop the old sidecar, rename the
+    data file in, rename the sidecar in. A crash leaves the file without a sidecar, never beside a stale one.
+    Mirrors polygon_ingest.ingest._write_with_sidecar."""
+    token = uuid.uuid4().hex.encode()
+    tag = lambda t: t.replace_schema_metadata({**(t.schema.metadata or {}), SIDECAR_PAIR_KEY: token})
+    ip = _index_path(outpath)
+    tmp, itmp = outpath.with_name(outpath.name + ".inprogress"), ip.with_name(ip.name + ".inprogress")
+    _pq.write_table(tag(table), tmp, compression="zstd", row_group_size=ROW_GROUP_SIZE_MARKET)
+    _pq.write_table(tag(pa.Table.from_pandas(index, preserve_index=False)), itmp)
+    ip.unlink(missing_ok=True)
+    tmp.replace(outpath)
+    itmp.replace(ip)
 
 def _iter_minute_market_files(root: Path, start: Optional[str] = None, end: Optional[str] = None) -> List[Tuple[Path, pd.Timestamp]]:
     """(path, event_day) for every <root>/<YYYY>/<MM>/<DD>.parquet, filtered to [start, end]."""
@@ -1374,13 +1475,15 @@ def _iter_minute_market_files(root: Path, start: Optional[str] = None, end: Opti
 
 def _read_day_index(path: Path, tickers: Optional[set] = None) -> pd.DataFrame:
     """Per-ticker first/last close for one market minute day file: the .idx.parquet sidecar written by the
-    ingester when present, else computed from the file (ticker + close columns; ~0.2 s for 1.4 M rows)."""
+    ingester when it describes the file (_sidecar_matches), else computed from the file (ticker + close columns;
+    ~0.2 s for 1.4 M rows). A stale sidecar would hand this ticker another one's edges, or miss it altogether."""
     ip = _index_path(Path(path))
-    if ip.exists():
+    if ip.exists() and _sidecar_matches(Path(path), ip):
         idx = pd.read_parquet(ip)
     else:
         cols = ["ticker", "close"] + (["datetime"] if "datetime" in _pq.ParquetFile(path).schema_arrow.names else [])
         df = pd.read_parquet(path, columns=cols)
+        df = df[df["ticker"].notna()]                       # lakes ingested before 2026-10 hold null-ticker rows
         df["ticker"] = _norm_ticker(df["ticker"])
         if "datetime" in df.columns:
             df = df.sort_values(["ticker", "datetime"])
@@ -1423,6 +1526,9 @@ def _stream_write_market_one(task: Tuple) -> int:
     df = pd.read_parquet(path, filters=[("ticker", "in", tpush)] if tpush else None)
     if "T" in df.columns and "ticker" not in df.columns:
         df = df.rename(columns={"T": "ticker"})
+    # Raw lakes ingested before 2026-10 carry all-zero bars with a null ticker (365 rows in 37 sessions): no
+    # symbol, so no holder or factors, and the sidecar could not cover them
+    df = df[df["ticker"].notna()]
     df["ticker"] = _norm_ticker(df["ticker"])
     if tlist:
         df = df[_wanted_mask(df["ticker"], tlist)]
@@ -1454,10 +1560,7 @@ def _stream_write_market_one(task: Tuple) -> int:
     d = pd.Timestamp(day)
     outpath = Path(outdir) / f"{d.year:04d}" / f"{d.month:02d}" / f"{d.day:02d}.parquet"
     outpath.parent.mkdir(parents=True, exist_ok=True)
-    tmp = outpath.with_suffix(".parquet.inprogress")
-    _pq.write_table(pa.Table.from_pandas(df[cols], preserve_index=False), tmp, compression="zstd", row_group_size=ROW_GROUP_SIZE_MARKET)
-    tmp.replace(outpath)
-    _day_index(df).to_parquet(_index_path(outpath), index=False)
+    _write_with_sidecar(pa.Table.from_pandas(df[cols], preserve_index=False), outpath, _day_index(df))
     return len(df)
 
 def _stream_write_minutes_market(id_days: pd.DataFrame, F: pd.DataFrame, G: pd.DataFrame, outdir: Path, write_workers: int,
@@ -1501,10 +1604,7 @@ def adjust_minute_market(prices: Path, sm: pd.DataFrame, spl: pd.DataFrame, div:
     days_df, edges = _scan_day_edges_market(files, tickers=tickers, threads=read_workers)
     if days_df.empty:
         raise SystemExit("No rows for the requested tickers in the selected day files.")
-    segs = _recycled_segments(days_df["ticker"].to_numpy(), days_df["event_day"], sm, gap_days)
-    if len(segs):
-        spl = _apply_event_segments(spl, segs, ["execution_date"])
-        div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+    sm, segs, spl, div = _key_by_bars(days_df["ticker"].to_numpy(), days_df["event_day"], sm, spl, div, gap_days)
     id_days = _attach_id_days(days_df, sm, segments=segs)
     if debug_dump is not None:
         debug_dump.mkdir(parents=True, exist_ok=True)
@@ -1620,11 +1720,8 @@ def _adjust_frame(px: pd.DataFrame, sm: pd.DataFrame, spl: pd.DataFrame, div: pd
                   workers: int = 1, gap_days: int = RECYCLE_GAP_DAYS) -> Tuple[pd.DataFrame, dict, bool]:
     """Batch adjustment of a price frame: holder ids, split factors, dividend factors, renormalization.
     Returns (adjusted frame, per-id stats, use_split_base)."""
-    segs = _recycled_segments(_norm_ticker(px["ticker"]).to_numpy(), _trading_day(_to_naive_utc(px["datetime"])),
-                              sm, gap_days)
-    if len(segs):
-        spl = _apply_event_segments(spl, segs, ["execution_date"])
-        div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+    sm, segs, spl, div = _key_by_bars(_norm_ticker(px["ticker"]).to_numpy(), _trading_day(_to_naive_utc(px["datetime"])),
+                                      sm, spl, div, gap_days)
     px_id = _attach_id(px, sm, segments=segs)
     px_id["close_split"]  = px_id["close"]
     px_id["volume_split"] = px_id["volume"]
@@ -1841,7 +1938,9 @@ def main():
                     help="Split a ticker's history where it stopped trading this many days or more, and give the "
                          "earlier segments their own holder id, so a recycled symbol's old bars are not credited "
                          "to today's company (ARM traded from 2003; Arm Holdings listed in 2023). Applies only to "
-                         "tickers whose security-master start is unconfirmed. 0 disables.")
+                         "tickers whose security-master start is unconfirmed. The same gap after a vendor delisting "
+                         "date is what confirms it as an end (CMCSK traded for three years past its vendor date). "
+                         "0 disables both.")
     ap.add_argument("--adjust", choices=["splits", "dividends", "both"], default="both",
                     help="Which adjustments to apply (default: both)")
     ap.add_argument("--materialize", choices=["minimal","close","ohlc"], default="minimal",
@@ -1906,10 +2005,8 @@ def main():
         if not files:
             raise SystemExit("No minute day-files found under --prices for the selection.")
         days_df = pd.DataFrame(files, columns=["ticker","path","event_day"])
-        segs = _recycled_segments(days_df["ticker"].to_numpy(), days_df["event_day"], sm, args.recycle_gap_days)
-        if len(segs):
-            spl = _apply_event_segments(spl, segs, ["execution_date"])
-            div = _apply_event_segments(div, segs, ["ex_date", "ex_dividend_date"])
+        sm, segs, spl, div = _key_by_bars(days_df["ticker"].to_numpy(), days_df["event_day"], sm, spl, div,
+                                          args.recycle_gap_days)
         id_days = _attach_id_days(days_df, sm, segments=segs)
 
         if args.debug_dump is not None:
