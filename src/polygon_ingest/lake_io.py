@@ -62,8 +62,10 @@ from pandas.api.types import is_datetime64tz_dtype
 
 try:
     from .tickers import clean_list, resolve
+    from .ingest import SIDECAR_PAIR_KEY
 except ImportError:      # running this file directly, as the CLI at the bottom allows
     from tickers import clean_list, resolve
+    from ingest import SIDECAR_PAIR_KEY
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
@@ -161,9 +163,21 @@ def _list_files_minute_market(root: Path, s: dt.date, e: dt.date) -> List[Path]:
 
 def read_day_index(day_file: str | Path) -> Optional[pd.DataFrame]:
     """The per-ticker sidecar (<DD>.idx.parquet: ticker, first_close, last_close, n_rows, row_start, row_end)
-    of a market-layout minute day file, or None if the file has none."""
+    of a market-layout minute day file, or None if the file has none or the one beside it does not describe
+    it. A sidecar describes its file when both footers carry the same `polygon_ingest.sidecar_pair` token
+    (written since 2026-10; older pairs carry none) and its ranges cover every row of the file. A stale one
+    would point at another ticker's rows, so a caller given None reads the file instead."""
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
     p = Path(day_file); ip = p.with_name(p.stem + ".idx.parquet")
-    return pd.read_parquet(ip) if ip.exists() else None
+    if not ip.exists():
+        return None
+    idx, meta = pq.read_table(ip), pq.read_metadata(p)
+    if (idx.schema.metadata or {}).get(SIDECAR_PAIR_KEY) != (meta.metadata or {}).get(SIDECAR_PAIR_KEY):
+        return None
+    if int(pc.sum(idx.column("n_rows")).as_py() or 0) != meta.num_rows:
+        return None
+    return idx.to_pandas()
 
 # ───────────────────────── manifest-aware selection ──────────────────────────
 def _safe_parse_ts(x: Any, source_tz: str) -> pd.Timestamp:

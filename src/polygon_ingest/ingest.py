@@ -51,15 +51,17 @@ Examples:
 """
 
 from __future__ import annotations
-import os, re, json, gzip, argparse, threading, time, sys
+import os, re, json, gzip, argparse, threading, time, sys, uuid
+import datetime as _dt
 from pathlib import Path
-from typing import Optional, Sequence, Tuple, Dict, List, Literal
+from typing import Callable, Optional, Sequence, Tuple, Dict, List, Literal
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
@@ -75,6 +77,9 @@ TICKER_CANDS  = ["ticker","T","symbol","S"]
 SHORTMAP      = {"o":"open","h":"high","l":"low","c":"close","v":"volume","n":"transactions","vw":"vwap"}
 DATE_RE       = re.compile(r"(?P<y>\d{4})[^\d]?(?P<m>\d{2})(?:[^\d]?(?P<d>\d{2}))?")
 LOCAL_TZ      = "US/Eastern"
+# Footer key a market minute file shares with its .idx.parquet sidecar: one random token per write, so a reader can
+# tell that the sidecar describes this version of the file (lake_io.read_day_index; factor_builder mirrors it).
+SIDECAR_PAIR_KEY = b"polygon_ingest.sidecar_pair"
 
 Tf = Literal["minute", "day"]
 Layout = Literal["ticker", "market"]   # ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>]; market: <out>/<YYYY>/<MM>[/<DD>] all tickers
@@ -186,6 +191,17 @@ def to_datetime_utc(series: pd.Series) -> pd.Series:
     return pd.to_datetime(s, unit=unit, utc=True)
 
 # ── layouts, bounded-memory flushing ──────────────────────────────────────────
+def file_session(p: Path) -> Optional[_dt.date]:
+    """The session a flat file holds, from its YYYY-MM-DD name; None when the name carries no full date."""
+    mm = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})", Path(p).stem)
+    if not mm:
+        return None
+    try:
+        return _dt.date(int(mm.group(1)), int(mm.group(2)), int(mm.group(3)))
+    except ValueError:
+        return None
+
+
 def source_period(p: Path, tf: Tf) -> Tuple[int, ...]:
     """(y, m) for day, (y, m, d) for minute, from the source file's YYYY/MM dirs and YYYY-MM-DD name."""
     y, m = parse_year_month_from_path(p)
@@ -225,8 +241,34 @@ def day_index(df: pd.DataFrame) -> pd.DataFrame:
     without reading the data columns, and readers can skip files a ticker is absent from."""
     pos = np.arange(len(df))
     g = pd.DataFrame({"ticker": df["ticker"].to_numpy(), "close": df["close"].to_numpy(), "_pos": pos}).groupby("ticker", sort=True)
-    return g.agg(first_close=("close", "first"), last_close=("close", "last"), n_rows=("close", "size"),
-                 row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
+    idx = g.agg(first_close=("close", "first"), last_close=("close", "last"), n_rows=("close", "size"),
+                row_start=("_pos", "min"), row_end=("_pos", "max")).reset_index()
+    # groupby drops null keys, so rows without a ticker would sit outside every range and a reader slicing by
+    # the sidecar would never see them; the worker drops them before this point
+    if int(idx["n_rows"].sum()) != len(df):
+        raise ValueError(f"sidecar would cover {int(idx['n_rows'].sum()):,} of {len(df):,} rows "
+                         f"({int(df['ticker'].isna().sum()):,} without a ticker)")
+    return idx
+
+
+def _with_pair_token(table: pa.Table, token: bytes) -> pa.Table:
+    return table.replace_schema_metadata({**(table.schema.metadata or {}), SIDECAR_PAIR_KEY: token})
+
+
+def _write_with_sidecar(table: pa.Table, fout: Path, index: pd.DataFrame, row_group_size: int) -> None:
+    """Write a market minute file and its <DD>.idx.parquet so that the sidecar on disk never describes another
+    version of the data file. Both go to temp names first, carrying one token in their footers; the old sidecar
+    is removed before the data file is renamed into place and the new one is renamed in after it. A crash in
+    between leaves the file without a sidecar (readers then scan it), never beside a stale one: a stale sidecar
+    slices the new file at the old row positions and returns another ticker's bars under the requested name."""
+    token = uuid.uuid4().hex.encode()
+    idx_path = fout.with_name(fout.stem + ".idx.parquet")
+    tmp, idx_tmp = fout.with_name(fout.name + ".inprogress"), idx_path.with_name(idx_path.name + ".inprogress")
+    pq.write_table(_with_pair_token(table, token), tmp, compression="zstd", row_group_size=row_group_size)
+    pq.write_table(_with_pair_token(pa.Table.from_pandas(index, preserve_index=False), token), idx_tmp)
+    idx_path.unlink(missing_ok=True)
+    tmp.replace(fout)
+    idx_tmp.replace(idx_path)
 
 
 def _clashes(key: tuple, layout: Layout, fold_guard: bool, spelling_of: Dict[str, str],
@@ -247,39 +289,95 @@ def _clashes(key: tuple, layout: Layout, fold_guard: bool, spelling_of: Dict[str
     return False
 
 
+def _bucket_period(key: tuple, tf: Tf) -> tuple:
+    """(yr, mo) of a day bucket, (yr, mo, dd) of a minute bucket; bucket keys end in it in either layout."""
+    return tuple(key[-3:] if tf == "minute" else key[-2:])
+
+
+def _bucket_path(out_root: Path, key: tuple, tf: Tf, layout: Layout) -> Path:
+    """ticker layout <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet, market layout <out>/<YYYY>/<MM>[/<DD>].parquet."""
+    root = out_root / str(key[0]) if layout == "ticker" else out_root
+    if tf == "minute":
+        yr, mo, dd = _bucket_period(key, tf)
+        return root / f"{yr:04d}" / f"{mo:02d}" / f"{dd:02d}.parquet"
+    yr, mo = _bucket_period(key, tf)
+    return root / f"{yr:04d}" / f"{mo:02d}.parquet"
+
+
 def _write_bucket(out_root: Path, key: tuple, parts: List[pd.DataFrame], tf: Tf, layout: Layout) -> None:
-    """Write one bucket: ticker layout <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet, market layout <out>/<YYYY>/<MM>[/<DD>].parquet."""
+    """Write one bucket at _bucket_path, replacing the file there whole."""
     base_cols = ["datetime", "ticker", "open", "high", "low", "close", "volume", "transactions", "vwap", "yr_et", "mo_et"] + (["day_et"] if tf == "minute" else [])
     final = pd.concat(parts, ignore_index=True)
     cols = [c for c in base_cols if c in final.columns] + [c for c in final.columns if c not in base_cols]
     if layout == "market":
         # ticker-major so one symbol is a contiguous slice and row-group statistics can prune it on read
         final = final[cols].sort_values(["ticker", "datetime"])
-        date_parts = key[-3:] if tf == "minute" else key[-2:]
         row_group_size: Optional[int] = 131_072
     else:
         final = final[cols].sort_values(["datetime", "ticker"])
-        date_parts = key[1:]
         row_group_size = None
-    if tf == "minute":
-        yr, mo, dd = date_parts
-        outdir = (out_root / str(key[0]) if layout == "ticker" else out_root) / f"{yr:04d}" / f"{mo:02d}"
-        name = f"{dd:02d}"
-    else:
-        yr, mo = date_parts
-        outdir = (out_root / str(key[0]) if layout == "ticker" else out_root) / f"{yr:04d}"
-        name = f"{mo:02d}"
-    outdir.mkdir(parents=True, exist_ok=True)
-    fout_tmp = outdir / f"{name}.parquet.inprogress"
-    fout = outdir / f"{name}.parquet"
+    fout = _bucket_path(out_root, key, tf, layout)
+    fout.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pandas(final, preserve_index=False)
+    if layout == "market" and tf == "minute" and "close" in final.columns:
+        _write_with_sidecar(table, fout, day_index(final.reset_index(drop=True)), row_group_size)
+        return
+    fout_tmp = fout.with_name(fout.name + ".inprogress")
     if row_group_size:
         pq.write_table(table, fout_tmp, compression="zstd", row_group_size=row_group_size)
     else:
         pq.write_table(table, fout_tmp, compression="zstd")
     fout_tmp.replace(fout)
-    if layout == "market" and tf == "minute" and "close" in final.columns:
-        day_index(final.reset_index(drop=True)).to_parquet(outdir / f"{name}.idx.parquet", index=False)
+
+
+def _uncovered(key: tuple, covered: Optional[frozenset], out_root: Path, tf: Tf, layout: Layout) -> bool:
+    """True when bucket `key` would replace an existing file whose period --src holds no flat file for. Its rows
+    were stamped into that month or session by a neighboring file (the 2019-08-12 day file carries 29 rows dated
+    08-13), and writing them would replace the whole file with those few rows. `covered` None: no guard."""
+    return (covered is not None and _bucket_period(key, tf) not in covered
+            and _bucket_path(out_root, key, tf, layout).exists())
+
+
+def _lake_sessions(files: Sequence[Path], threads: int = 8) -> set:
+    """ET trading dates present in lake files (their `datetime` column; tz-naive values are read as UTC)."""
+    def one(f: Path) -> set:
+        s = pd.Series(pc.unique(pq.read_table(f, columns=["datetime"]).column("datetime")).to_pandas())
+        s = pd.to_datetime(s)
+        if s.dt.tz is None:
+            s = s.dt.tz_localize("UTC")
+        return set(s.dt.tz_convert(LOCAL_TZ).dt.date)
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+        return set().union(*ex.map(one, files)) if files else set()
+
+
+def month_coverage_gaps(out_root: Path, csvs: Sequence[str], layout: Layout,
+                        rewrites: Optional[Callable[[str], bool]] = None) -> Dict[Tuple[int, int], List[_dt.date]]:
+    """Sessions a day run would drop. A day lake is one file per month (per ticker in the ticker layout) and the
+    ingester rewrites each month it has rows for from those rows alone, with no date filter, so a refresh tree
+    starting 2025-08-14 would replace day/all/2025/08.parquet with the sessions after 08-13 alone. Returns, for each month
+    --src touches whose file already exists, the sessions in that file that --src holds no flat file for.
+    `rewrites` limits a ticker-layout check to the symbol directories the run writes (its --watch / --only)."""
+    have: Dict[Tuple[int, int], set] = defaultdict(set)
+    months: set = set()
+    for c in csvs:
+        try:
+            months.add(parse_year_month_from_path(Path(c)))
+        except ValueError:
+            continue
+        d = file_session(Path(c))
+        if d is not None:
+            have[(d.year, d.month)].add(d)
+    gaps: Dict[Tuple[int, int], List[_dt.date]] = {}
+    for y, m in sorted(months):
+        rel = Path(f"{y:04d}") / f"{m:02d}.parquet"
+        files = ([out_root / rel] if layout == "market" else sorted(out_root.glob(f"*/{rel}")))
+        files = [f for f in files if f.is_file() and (layout == "market" or rewrites is None or rewrites(f.parent.parent.name))]
+        if not files:
+            continue
+        missing = sorted(_lake_sessions(files) - have[(y, m)])
+        if missing:
+            gaps[(y, m)] = missing
+    return gaps
 
 
 # ── worker (minute/day via tf switch) ─────────────────────────────────────────
@@ -294,6 +392,7 @@ def worker(
     layout: Layout = "ticker",
     ignore_case: bool = False,
     fold_guard: bool = False,
+    covered: Optional[frozenset] = None,
 ):
     global PROG_COUNTER, LOG_QUEUE
 
@@ -302,7 +401,8 @@ def worker(
     dtypes: Dict[str,str] = {}
     usecols: List[str] = []
 
-    rows_in = rows_kept = dropped_watch = dropped_only = 0
+    rows_in = rows_kept = dropped_watch = dropped_only = dropped_null = 0
+    untouched: Dict[str, int] = {}   # existing files a stray bucket was not allowed to replace (see _uncovered) -> rows
     watch_upper = {t.upper() for t in watch} if watch is not None else None
     only_upper = only.upper() if only is not None else None
     matched: set[str] = set()        # watchlist symbols this worker actually saw
@@ -370,6 +470,14 @@ def worker(
                 # $3.75 preferred, a different security from AAP (Advance Auto Parts); upper-casing
                 # merged the two into one symbol. See polygon_ingest.tickers.
                 df["ticker"] = df["ticker"].astype("string")
+                # A bar with no symbol belongs to no security. Polygon's minute files hold 365 such rows in 37
+                # sessions (2006-08/09, 2013-11/12, 2014-01), all-zero bars that used to land after the last
+                # ticker block of the day file and outside every sidecar range.
+                blank = df["ticker"].fillna("").str.strip().eq("").to_numpy(dtype=bool)
+                if blank.any():
+                    dropped_null += int(blank.sum())
+                    df = df.loc[~blank]
+                    if df.empty: continue
 
                 # filters
                 if only is not None:
@@ -437,6 +545,9 @@ def worker(
                     if _clashes(k, layout, fold_guard, spelling_of, clashes):
                         buckets.pop(k)
                         continue
+                    if _uncovered(k, covered, out_root, tf, layout):
+                        untouched[str(_bucket_path(out_root, k, tf, layout))] = sum(len(x) for x in buckets.pop(k))
+                        continue
                     _write_bucket(out_root, k, buckets.pop(k), tf, layout)
                     written += 1
 
@@ -446,6 +557,9 @@ def worker(
             if _clashes(k, layout, fold_guard, spelling_of, clashes):
                 buckets.pop(k)
                 continue
+            if _uncovered(k, covered, out_root, tf, layout):
+                untouched[str(_bucket_path(out_root, k, tf, layout))] = sum(len(x) for x in buckets.pop(k))
+                continue
             _write_bucket(out_root, k, buckets.pop(k), tf, layout)
             written += 1
 
@@ -453,7 +567,7 @@ def worker(
             LOG_QUEUE.put(
                 f"[worker {worker_id:3d}] rows_in={rows_in:,} rows_kept={rows_kept:,} "
                 f"dropped_only={dropped_only:,} dropped_watch={dropped_watch:,} "
-                f"written_files={written}"
+                f"dropped_null_ticker={dropped_null:,} written_files={written}"
             )
 
     if clashes:
@@ -463,7 +577,7 @@ def worker(
             f"security's files would replace the other's. Their rows were not written. Use --layout market, "
             f"write to a case-sensitive volume, or restrict --watch to one spelling of each symbol."
         )
-    return worker_id, written, matched, near_misses
+    return worker_id, written, matched, near_misses, dropped_null, untouched
 
 # ── main progress thread (stays at 100%) ─────────────────────────────────────
 def progress_thread(total_files, counter, stop_event):
@@ -585,7 +699,11 @@ def run_ingest(
     manifest_workers: int = 4,
     layout: Layout = "ticker",
     ignore_case: bool = False,
+    replace_month: bool = False,
 ):
+    """Ingest every flat file under `src_root` into `out_root`. Each output file is replaced whole, so a run is
+    refused (before anything is written) when a day month file holds sessions --src lacks, unless
+    `replace_month`; see month_coverage_gaps and _uncovered."""
     import multiprocessing as mp
 
     out_root.mkdir(parents=True, exist_ok=True)
@@ -658,6 +776,37 @@ def run_ingest(
     total_files = sum(len(lst) for lst in owned_csvs)
     LOG(f"[INFO] Total files scheduled for processing: {total_files}", critical=True)
 
+    # A day month file is rewritten from what --src holds for that month, so --src must hold every session the
+    # file already has. Checked before any worker starts, so a refused run leaves the lake as it was.
+    if tf == "day" and not replace_month:
+        if layout == "ticker" and only is not None:
+            rewrites = (lambda t: t.upper() == only.upper()) if ignore_case else (lambda t: t == only)
+        elif layout == "ticker" and watch_set is not None:
+            wu = {t.upper() for t in watch_set}
+            rewrites = (lambda t: t.upper() in wu) if ignore_case else (lambda t: t in watch_set)
+        else:
+            rewrites = None
+        gaps = month_coverage_gaps(out_root, all_csvs, layout, rewrites)
+        if gaps:
+            lines = [f"        {y:04d}-{m:02d}: {len(v)} session(s) missing from --src "
+                     f"({v[0]}{' .. ' + str(v[-1]) if len(v) > 1 else ''})" for (y, m), v in sorted(gaps.items())[:12]]
+            if len(gaps) > 12:
+                lines.append(f"        ... and {len(gaps) - 12} more month(s)")
+            msg = (f"[ERROR] {len(gaps)} month file(s) under {out_root} hold sessions --src has no flat file for, and "
+                   f"the ingester rewrites a month whole from --src, so they would be lost:\n" + "\n".join(lines) +
+                   "\n        Put every flat file of those months under --src, or pass --replace-month to rewrite "
+                   "them from --src alone.")
+            LOG(msg, critical=True)
+            log_stop.set(); log_thread.join()
+            raise SystemExit(msg)
+    # periods --src holds a flat file for: a bucket outside them may create a file but never replace one
+    if replace_month:
+        covered = None
+    elif tf == "day":
+        covered = frozenset(parse_year_month_from_path(Path(c)) for c in all_csvs if c not in skipped)
+    else:
+        covered = frozenset((d.year, d.month, d.day) for c in all_csvs if (d := file_session(Path(c))) is not None)
+
     # Multiprocessing context
     try:
         ctx = mp.get_context("fork")
@@ -686,14 +835,18 @@ def run_ingest(
         for wid in range(n_workers):
             futures.append(ex.submit(
                 worker, owned_csvs[wid], out_root, watch_set, only, chunk, wid, tf, layout,
-                ignore_case, fold_guard
+                ignore_case, fold_guard, covered
             ))
         matched: set[str] = set()
         near_misses: set[str] = set()
+        dropped_null = 0
+        untouched: Dict[str, int] = {}
         for f in futures:
-            wid, nkeys, m, n = f.result()
+            wid, nkeys, m, n, nnull, unt = f.result()
             matched |= m
             near_misses |= n
+            dropped_null += nnull
+            untouched.update(unt)
             LOG(f"worker {wid:3d}: wrote {nkeys} parquet partitions")
 
     # Finish progress
@@ -702,6 +855,13 @@ def run_ingest(
     stop_event.set()
     thr.join()
     LOG("[INFO] All workers completed.", critical=True)
+    if dropped_null:
+        LOG(f"[INFO] {dropped_null:,} row(s) with an empty ticker field dropped (no symbol to file them under)", critical=True)
+    if untouched:
+        LOG(f"[warn] {len(untouched)} existing file(s) left as they were: rows stamped into a period --src holds no "
+            f"flat file for would have replaced them whole (pass --replace-month to write them anyway):", critical=True)
+        for path, n in sorted(untouched.items())[:20]:
+            LOG(f"  {path} ({n:,} row(s) not written)", critical=True)
 
     # Matching is exact, so a watchlist entry spelled in the wrong case now finds nothing where it
     # used to find the symbol. Say so, and name the symbols that were skipped for that reason - they
@@ -748,6 +908,10 @@ if __name__ == "__main__":
                          "(different securities; not safe for --layout ticker on a case-folding filesystem)")
     ap.add_argument("--layout", choices=["ticker", "market"], default="ticker",
                     help="ticker: <out>/<TICKER>/<YYYY>/<MM>[/<DD>].parquet | market: <out>/<YYYY>/<MM>[/<DD>].parquet with all tickers (whole universe)")
+    ap.add_argument("--replace-month", action="store_true",
+                    help="Rewrite each day month file from --src even where --src lacks sessions the file already "
+                         "holds (they are dropped), and let rows a flat file stamps into a neighboring month or "
+                         "session replace that file. Without it such a run is refused before anything is written.")
     ap.add_argument("--workers", type=int, default=os.cpu_count()//2 or 1, help="parallel workers")
     ap.add_argument("--chunk", type=int, default=CHUNK_DEFAULT, help="rows per pandas.read_csv chunk")
     # Manifest options
@@ -772,5 +936,5 @@ if __name__ == "__main__":
         write_manifest=args.write_manifest,
         manifest_out=args.manifest_out,
         manifest_workers=args.manifest_workers, layout=args.layout,
-        ignore_case=args.ignore_case,
+        ignore_case=args.ignore_case, replace_month=args.replace_month,
     )

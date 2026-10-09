@@ -190,9 +190,10 @@ def _details_row(d, ticker: str, *, source: str, anchor_date=None) -> Dict[str, 
         "effective_end": _ts(getattr(d, "delisted_utc", None)),
         "anchor_date": _ts(anchor_date),
         "updated": _ts(getattr(d, "updated", None)),
-        # list_date is imprecise (IPO date, possibly under another symbol); only ticker events confirm a start
+        # list_date is imprecise (IPO date, possibly under another symbol); only ticker events confirm a start.
+        # delisted_utc is no better (CMCSK: 2012-12-14, traded until 2015); the adjuster confirms it from bars.
         "start_confirmed": False,
-        "end_confirmed": bool(pd.notna(_ts(getattr(d, "delisted_utc", None)))),
+        "end_confirmed": False,
     }
 
 

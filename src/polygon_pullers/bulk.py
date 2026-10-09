@@ -333,7 +333,9 @@ def derive_collection_refdata(market_dir: str | Path, tickers: Iterable[str], ou
         "anchor_date": pd.NaT,
         "updated": src["last_updated_utc"],
         "start_confirmed": False,                       # the list endpoint carries no adoption date
-        "end_confirmed": src["delisted_utc"].notna(),   # a delisting date is a real end
+        # Nor a confirmed end: CMCSK is delisted 2012-12-14 here and traded until 2015. The adjuster confirms
+        # a delisting date only where the ticker's bars stop there (factor_builder._confirm_ends_by_bars).
+        "end_confirmed": False,
     })[SM_COLUMNS]
     if extra_holders is not None and len(extra_holders):
         sm = pd.concat([sm, extra_holders[SM_COLUMNS]], ignore_index=True)
