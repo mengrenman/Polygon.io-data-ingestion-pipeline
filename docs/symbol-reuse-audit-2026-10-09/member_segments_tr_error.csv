@@ -1,0 +1,32 @@
+ticker,true_company,window,yrs,n_div_applied,div_applied_logpct,n_div_true,div_true_logpct,true_divs_filed_under,n_missing_days,n_foreign_days,tr_error_logpct,tr_error_logpct_per_yr,current_id,master_name,member_months,first_member_month,last_member_month,note
+ABX,Barrick,2003-09-10..2018-12-31,15.3,0,0.0,49,-17.74,GOLD:49,49,0,17.74,1.16,BBG00VY1KB95,"Abacus Global Management, Inc.",182,2003-11-28,2018-12-31,"Barrick; its dividends are filed under GOLD (its symbol 2019-2025), none under ABX"
+ACH,Alum Corp of China Limited,2003-09-10..2022-09-01,19.0,82,-101.29,11,-16.55,ACH:11,0,72,-84.74,-4.47,BBG000CTV5F0,"Accendra Health, Inc.",35,2003-12-31,2010-03-31,Chalco ADR; Owens & Minor/Accendra dividends arrive via the holder id
+APC,Anadarko Petroleum,2003-09-10..2019-08-08,15.9,62,-13.16,62,-13.16,APC:62,0,0,0.0,0.0,BBG01Z6HN5H2,ARKO Petroleum Corp. Class A Common Stock,189,2003-11-28,2019-07-31,
+BBT,BB&T,2003-09-10..2019-12-06,16.2,86,-68.1,67,-56.04,"TFC:38,BBT:29",36,56,-12.06,-0.74,BBG000BB00D7,Beacon Financial Corporation,193,2003-11-28,2019-11-29,BB&T; 2011-2019 dividends filed under TFC; Berkshire Hills (BHLB) dividends arrive via Beacon's holder id
+BEBE,Bebe Stores Inc,2003-09-10..2017-12-15,14.3,42,-32.59,42,-32.59,BEBE:42,0,0,0.0,0.0,CIK__0002079933,TGE Value Creative Solutions Corp,17,2004-12-31,2007-01-31,
+BID,Sotheby's,2003-09-10..2019-10-02,16.1,38,-22.92,38,-22.92,BID:38,0,0,0.0,0.0,CIK__0002094919,Tribeca Strategic Acquisition Corp. Class A Ordinary Shares,105,2006-05-31,2019-08-30,
+BOT,"CBOT HOLDINGS, INC. CL-A COM",2005-10-19..2007-07-12,1.7,0,0.0,0,0.0,,0,0,0.0,0.0,BBG01XB0FY02,"RoboStrategy, Inc. Common Stock",19,2005-12-30,2007-06-29,
+CBK,Christopher & Banks Corporat,2003-09-10..2019-04-17,15.6,32,-19.09,32,-19.09,CBK:32,0,0,0.0,0.0,BBG000FVM009,"Commercial Bancgroup, Inc. Common Stock",2,2003-11-28,2003-12-31,
+CCC,Clarivate Plc,2018-10-29..2021-01-29,2.3,0,0.0,0,0.0,,0,0,0.0,0.0,BBG00WNSJM49,CCC Intelligent Solutions Holdings Inc. Common Stock,2,2020-02-28,2020-08-31,"Churchill Capital SPAC, then Clarivate after the 2019 merger; continues as CLVT"
+CCXI,"ChemoCentryx, Inc.",2012-02-08..2022-10-19,10.7,0,0.0,0,0.0,,0,0,0.0,0.0,CIK__0002074973,Churchill Capital Corp XI Class A Ordinary Shares,8,2020-01-31,2022-09-30,
+ETS,"ENTERASYS NETWORKS, INC. (NE",2003-09-10..2006-03-01,2.5,0,0.0,0,0.0,,0,0,0.0,0.0,BBG01TV7D2Q8,Elite Express Holding Inc. Class A Common Stock,1,2003-11-28,2003-11-28,
+FISV,Fiserv Inc,2003-09-10..2023-06-06,19.7,0,0.0,0,0.0,,0,0,0.0,0.0,BBG000BJKPG0,"Fiserv, Inc. Common Stock",235,2003-11-28,2023-05-31,"same company (Fiserv, back on FISV from 2025-11); id is right"
+GOLD,Randgold,2003-09-10..2018-12-28,15.3,74,-46.8,12,-8.38,GOLD:12,0,62,-38.42,-2.51,BBG005ZVDK48,"Gold.com, Inc.",206,2008-01-31,2025-04-30,"two companies in one segment: Randgold to 2018-12-28, Barrick from 2019-01-02 (close_tr -79.5% on 2019-01-02); A-Mark/Gold.com dividends arrive via the holder id"
+GOLD,Barrick,2019-01-02..2025-05-08,6.3,40,-55.88,25,-11.73,GOLD:25,0,16,-44.15,-6.96,BBG005ZVDK48,"Gold.com, Inc.",206,2008-01-31,2025-04-30,"two companies in one segment: Randgold to 2018-12-28, Barrick from 2019-01-02 (close_tr -79.5% on 2019-01-02); A-Mark/Gold.com dividends arrive via the holder id"
+HAWK,"Blackhawk Network Holdings, ",2013-04-19..2018-06-14,5.2,0,0.0,0,0.0,,0,0,0.0,0.0,BBG00FDMGFF6,"HawkEye 360, Inc.",6,2017-12-29,2018-05-31,
+HOS,"Hornbeck Offshore Services, ",2004-03-26..2019-12-20,15.7,0,0.0,0,0.0,,0,0,0.0,0.0,BBG000J7Q1L9,"Hornbeck Offshore Services, Inc.",28,2007-01-31,2014-01-31,old Hornbeck (CIK 354359); today's HOS is the post-bankruptcy issuer (CIK 866829)
+ITG,Investment Technology Group ,2003-09-10..2019-02-28,15.5,16,-5.41,16,-5.41,ITG:16,0,0,0.0,0.0,BBG00271QZH1,"ITG, Inc. Class A Common Stock",22,2006-01-31,2008-07-31,
+LIFE,"aTyr Pharma, Inc. Common Sto",2015-05-07..2024-06-04,9.1,0,0.0,0,0.0,,0,0,0.0,0.0,BBG00L538636,Ethos Technologies Inc. Class A Common Stock,1,2021-10-29,2021-10-29,aTyr Pharma; continues as ATYR
+MAKO,MAKO SURGICAL CORP COM,2008-02-14..2013-12-16,5.8,0,0.0,0,0.0,,0,0,0.0,0.0,BBG000TW74W6,Mako Mining Corp Common Stock,19,2011-06-30,2013-11-29,
+MICC,Millicom,2003-09-10..2011-05-27,7.7,0,0.0,4,-11.25,TIGO:4,3,0,11.25,1.46,CIK__0002071668,The Magnum Ice Cream Company N.V.,62,2004-04-30,2011-05-31,Millicom; 2008-2011 dividends filed under TIGO (relisted 2019)
+NGEN,NANOGEN INC,2003-09-10..2009-03-20,5.5,0,0.0,0,0.0,,0,0,0.0,0.0,BBG00NQ5C032,NervGen Pharma Corp. Common stock,6,2003-12-31,2004-05-28,
+NHP,NATIONWIDE HEALTH PROPERTIES,2003-09-10..2011-07-01,7.8,30,-45.54,30,-45.54,NHP:30,0,0,0.0,0.0,BBG021RVZ035,"National Healthcare Properties, Inc. Class A Common Stock",51,2007-03-30,2011-06-30,
+P,Pandora Media Inc,2011-06-15..2019-01-31,7.6,0,0.0,0,0.0,,0,0,0.0,0.0,BBG00212PVZ5,"Everpure, Inc.",84,2011-08-31,2019-01-31,
+PMI,PMI GROUP INC (THE),2003-09-10..2011-10-28,8.1,21,-3.04,21,-3.04,PMI:21,0,0,0.0,0.0,BBG000TR9Y22,"Picard Medical, Inc.",61,2003-11-28,2010-12-31,
+PS,"Pluralsight, Inc. Class A Co",2018-05-17..2021-04-05,2.9,0,0.0,0,0.0,,0,0,0.0,0.0,BBG01N5GDY62,Pershing Square Inc.,10,2019-03-29,2021-02-26,
+Q,"Quintiles IMS Holdings, Inc",2013-05-09..2017-11-14,4.5,0,0.0,0,0.0,,0,0,0.0,0.0,BBG01TRL73S5,"Qnity Electronics, Inc.",41,2013-07-31,2017-10-31,Quintiles; continues as IQV
+SEV,Sono Group N.V. Common Share,2021-11-17..2023-07-20,1.7,0,0.0,0,0.0,,0,0,0.0,0.0,BBG01X72RVT5,Aptera Motors Corp. Class B Common Stock,1,2022-01-31,2022-01-31,
+SGP,SCHERING PLOUGH CORP,2003-09-10..2009-11-03,6.1,24,-6.83,24,-6.83,SGP:24,0,0,0.0,0.0,BBG01HDDMDS5,"SpyGlass Pharma, Inc. Common Stock",72,2003-11-28,2009-10-30,
+SVA,"Sinovac Biotech, Ltd",2004-12-08..2019-02-22,14.2,0,0.0,0,0.0,,0,0,0.0,0.0,CIK__0001084201,"Sinovac Biotech, Ltd",3,2009-09-30,2009-11-30,same company (Sinovac); id is right
+TII,TELMEX INTERNACIONAL S A B D,2008-06-11..2010-08-25,2.2,4,-4.48,4,-4.48,TII:4,0,0,0.0,0.0,BBG00LG3ZMR3,Titan Mining Corporation,6,2010-01-29,2010-06-30,
+VIP,VimpelCom,2003-09-10..2017-03-30,13.6,6,-26.81,12,-37.69,"VIP:7,VEON:5",5,0,10.88,0.8,BBG00ZR8BTP2,Vulcan Infrastructure and Power Inc. Class A Common Stock,103,2003-11-28,2013-12-31,VimpelCom; dividends partly under VEON

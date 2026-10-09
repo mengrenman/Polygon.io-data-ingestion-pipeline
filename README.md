@@ -1,6 +1,6 @@
 # Polygon.io Data Lake Builder
 
-A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 167 regression tests, several of them known-answer checks against real data.
+A pipeline that turns **Polygon.io flat files** into local **Parquet lakes** (per-ticker or whole-market layouts), pulls **reference data** for the entire market in a few hundred requests (tickers with FIGI/CIK, splits, dividends), keys every row by the **company** behind a ticker so recycled symbols adjust correctly, builds **adjusted** lakes (split-adjusted + total-return), and derives a **survivorship-free, point-in-time universe**. 188 regression tests, several of them known-answer checks against real data.
 
 <p align="center">
 <img src="figures/adjust.png" alt="NVDA day bars: unadjusted close vs split-adjusted close vs total-return close, base 100" width="1000">
@@ -84,7 +84,8 @@ repo_polygonio/
 │  │ 
 │  └─ polygon_pullers/
 │     ├─ __init__.py                     # per-ticker pullers (details/events/splits/dividends), holder ids
-│     └─ bulk.py                         # market-wide tables + derived collection files (default)
+│     ├─ bulk.py                         # market-wide tables + derived collection files (default)
+│     └─ asof.py                         # point-in-time holders; corporate actions re-filed by company
 │
 ├─ legacy_scripts/
 │  ├─ polygon_ingest_day.py              # thin shim → run_ingest(tf="day")
@@ -98,10 +99,13 @@ repo_polygonio/
 │  ├─ build_adjusted_lake.sh             # unified builder (minute/day)
 │  ├─ pull_ref_data.sh                   # wrapper to run `run_pullers.py` (loads .env)
 │  ├─ build_index_universes.py           # build SPX/NDX/combined ticker lists
-│  └─ extract_tickers_from_flatfiles.py  # discover tickers from CSV.GZ flatfiles
+│  ├─ extract_tickers_from_flatfiles.py  # discover tickers from CSV.GZ flatfiles
+│  ├─ build_holder_lines.py              # holder lines + re-filed splits/dividends from as-of snapshots
+│  └─ audit_symbol_holders.py            # audit an adjusted day lake for symbols credited to the wrong company
 │
 ├─ data/
 │  ├─ ticker_lists/                      # static ticker lists (*.json / *.txt)
+│  ├─ refdata_overrides/                 # reviewed corporate-action filings (action_holders.csv)
 │  └─ universes/<name>/                  # point-in-time membership, segments, summary (generated, git-ignored)
 │
 ├─ refdata/
@@ -122,7 +126,9 @@ repo_polygonio/
 │  └─ minute/all_adjusted/<YYYY>/<MM>/<DD>.parquet  # market layout (+ <DD>.idx.parquet)
 │
 ├─ docs/
-│  └─ asset-class-expansion.md          # plan (not implemented): options / futures / indices
+│  ├─ asset-class-expansion.md          # plan (not implemented): options / futures / indices
+│  ├─ symbol-reuse-after-lake-end.md    # symbols reused after the lake ends: measured, fix behind --holder-lines
+│  └─ symbol-reuse-audit-2026-10-09/    # affected segments, member months, total-return error (CSV)
 │
 ├─ notebooks/                            # all executed against the real lakes, outputs committed
 │  ├─ 01_index_universes.ipynb           # today's SPX/NDX lists (survivorship biased — see 05)
@@ -131,7 +137,7 @@ repo_polygonio/
 │  ├─ 04_lake_inventory_and_quality.ipynb    # EDA: coverage, calendar, data-quality findings
 │  ├─ 05_universe_and_survivorship.ipynb     # EDA: point-in-time universe, survivorship priced
 │  └─ 06_minute_lake_access.ipynb            # EDA: reading 7 bn rows, sidecars, intraday profile
-├─ tests/                                # pytest, 167 tests: adjustment math, holder ids, ticker case, security type, layouts, pullers, universe
+├─ tests/                                # pytest, 188 tests: adjustment math, holder ids, ticker case, security type, layouts, pullers, universe
 └─ figures/adjust.png                    # README QA figure, built from real refdata
 ```
 
@@ -394,6 +400,20 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "before the current owner,
   identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
   cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
+  This covers reuse *inside* the lake after a gap of 60 days or more only; see the next entry.
+- **Symbols reused after the lake ends — measured; fix ready, not applied (lake builds are on hold pending
+  the license question in `docs/asset-class-expansion.md` §1).** The security master
+  names each symbol's *current* company, so a symbol that stopped trading inside the lake and was reused
+  later keeps one segment and today's id: `ABX`'s Barrick Gold bars (2003–2018) carry Abacus Global
+  Management's. 416 segments, 490,110 rows, 1,770 of 262,000 universe member-months. Massive also files a
+  company's dividends and splits under a symbol it held *later* (Barrick's under `GOLD`, BB&T's under `TFC`),
+  so some segments miss their dividends, some receive another company's, and two universe members carry a
+  foreign split: `GOLD` +102% on 2022-06-07 and `ACH` +53% on 2010-04-01 in `close_tr`. A handover with a
+  gap under 60 days puts two companies under one id (`GOLD` −79.5% on 2019-01-02, `T` +24.3% on
+  2005-12-01). Point-in-time snapshots fix all of it (`run_pullers.py --asof-dates`,
+  `scripts/build_holder_lines.py`, derive with `--holder-lines`). See
+  [docs/symbol-reuse-after-lake-end.md](docs/symbol-reuse-after-lake-end.md) for the measurements, the
+  design and the rollout, and `docs/symbol-reuse-audit-2026-10-09/` for the affected segments.
 - **Security type was missing for older names — now inferred.** Polygon returns no `type` for 28.8% of
   its delisted stock records and **none** of its active ones, so the gap tracked survival: filtering on
   `type == "CS"` dropped companies that were acquired or went bankrupt. Liquid name-days (close ≥ $5,
