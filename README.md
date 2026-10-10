@@ -393,8 +393,9 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   2023, and that company's splits were applied to them; `COIN`, `APP`, `ANET`, `AXON` and `GM` the same.
   The adjuster now cuts a ticker's history wherever it stopped trading for 60 days or more and gives
   each earlier segment its own id, `NOFIGI__<TICKER>#SEG<n>`, re-keying corporate actions onto those
-  segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "before the current owner,
-  identity unknown"** — it will not join to `security_master.holder_id`; drop those rows from a
+  segments by date. 6.4% of rows carry one. **An id containing `#SEG` means "a company the security
+  master does not name"**, before its holder or between a delisted holder's end and the symbol's last
+  stretch. It will not join to `security_master.holder_id`; drop those rows from a
   cross-section rather than letting them fall through a join unmatched. See `--recycle-gap-days`.
 - **A vendor delisting date was read as a confirmed end — fixed in code; the adjusted lakes still carry it
   (lake builds are on hold pending the license question in `docs/asset-class-expansion.md` §1).** The derive
@@ -414,6 +415,30 @@ files from `POLYGON_FLATFILES`), defaulting to `~/local/parquet_lake`, so nothin
   55 (472 rows) whose symbol went quiet for 60 days or more. The ids of those
   rows change at the next adjusted rebuild, a breaking change for anything keyed on `id`; until then join
   `CMCSK` and `MOLXA` on `ticker`, or treat 2012-12-17 as missing for them.
+- **A delisted holder's own bars carried a `#SEG` id — fixed in code; the adjusted lakes still carry it.** The
+  gap cut above spares one segment of a single-holder ticker, and it took the last one for the security
+  master's holder. When the holder's end is confirmed and the symbol prints again after it, the last segment
+  is someone else's. `RET` (Equity Securities Trust II, `CIK__0001161676`) stops on 2005-02-14, a day before
+  its vendor end, and prints again from 2008-09-10: its 358 bars are `NOFIGI__RET#SEG0`, the 104 later ones
+  `NOFIGI__RET`, and the trust's id is on none of its bars. The holder's segment is now the last one that
+  starts on or before a confirmed end. Earlier segments keep their `#SEG` ids, the last segment after the end
+  stays `NOFIGI__<TICKER>`, any segment in between gets its own `#SEG` id, and splits and dividends follow
+  by date. At the next rebuild 22,329 `day_adj` rows on 55 tickers move from a `#SEG` id to their holder's
+  (DoubleClick's `DCLK`, `ICOS`, NTL's `NTLI` and Maytag's `MYG` among them), with 82 dividends and 4 splits.
+  For 42 of the 55 the only bar after the end is the bad 2007-06-13 print under *Bad ticks* below.
+  **Rebuild this only together with the ticker-chains fix.** 21 of the 55 holder ids also label other
+  tickers' bars (`CIK__0000800083` labels 15 unrelated symbols), and today's builder computes one factor
+  series per id across all its tickers, so those series are already wrong (`GFN` common's `tr_price_factor`
+  is 0.0037 in 2013). Built alone, the relabel moves `close_tr` on 20,544 rows, 18,555 of them on those other
+  tickers. With factors per ticker chain it moves 996 rows on 4 tickers, each where the restored segment
+  links or unlinks a chain: `SIGY`'s bars join `SIG`, Signet's NYSE listing from 2004-11-16, and `NTLIW`
+  (NTL's warrants) no longer runs into `VMED`, Virgin Media's common stock. The minute streaming path
+  keys actions by holder either way, so there 2 splits and 25 dividends join holders shared with other
+  tickers. The universe build makes the same last-segment assumption (`classify_segments`): 264 member rows
+  on 14 of these tickers have no type and no `holder_id` there, so after the rebuild their `day_adj` `id`
+  names the holder and the universe's `holder_id` is empty. Snapshot windows from `--holder-lines` take an
+  observed ticker out of the gap cut; the annual dates observe the holder's segment of 44 of the 55, and a
+  snapshot that names the master's company gives the same ids as the cut.
 - **Minute sidecars could go stale — fixed in code.** The ingester renamed a day file into place and only
   then wrote its `.idx.parquet`; a crash between the two left no sidecar or the previous one, and a reader
   slicing the new file at the old row positions gets another ticker's bars under the name it asked for. The
