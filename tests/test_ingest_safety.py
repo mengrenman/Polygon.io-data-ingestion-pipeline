@@ -11,8 +11,13 @@ What a crash, a partial source tree or a symbol-less vendor row must not do to a
 3. Polygon's minute files carry 365 rows with an empty ticker field in 37 sessions (2006-08-31 to 2014-01-23):
    all-zero bars that sat after the last ticker block, outside every sidecar range. They are dropped on ingest,
    and day_index refuses to write a sidecar that does not cover its file.
+4. A market-layout file holds every ticker of its period and is rewritten whole from the rows the run keeps, so
+   `poly bars --layout market --watch list.json --out lake/day/all` would have left each month it touched holding
+   the list alone. A --watch / --only run that would rewrite a file holding other tickers is now refused before
+   anything is written unless --replace-with-subset is passed.
 """
 import gzip
+import json
 import shutil
 
 import pandas as pd
@@ -263,3 +268,102 @@ class TestRowsWithoutATicker:
         adj = pd.read_parquet(tmp_path / "adj/2006/08/31.parquet")
         assert adj["ticker"].tolist() == ["AAA"] * 3 and adj["id"].notna().all()
         assert int(read_day_index(tmp_path / "adj/2006/08/31.parquet")["n_rows"].sum()) == 3
+
+
+# ---------------------------------------------------------------------------
+# 4. a ticker subset written over a market lake
+# ---------------------------------------------------------------------------
+def _universe_lake(tmp_path, tf):
+    """A market lake of AAA, BBB and CCC (day: 2025-08-11 .. 13; minute: one session) -> (src, out, period file)."""
+    if tf == "minute":
+        f = _minute_lake(tmp_path, "lake", {"AAA": 3, "BBB": 2, "CCC": 4})
+        return tmp_path / "src_lake", tmp_path / "lake", f
+    src, out = _day_tree(tmp_path / "full", AUG, ("AAA", "BBB", "CCC")), tmp_path / "lake"
+    ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market")
+    return src, out, out / "2025/08.parquet"
+
+
+def _watch(tmp_path, *symbols):
+    p = tmp_path / "watch.json"
+    p.write_text(json.dumps(list(symbols)))
+    return p
+
+
+def _snapshot(out):
+    return {p: p.read_bytes() for p in sorted(out.rglob("*.parquet"))}
+
+
+class TestSubsetOverAMarketLake:
+    @pytest.mark.parametrize("tf", ["day", "minute"])
+    @pytest.mark.parametrize("select", ["watch", "only"])
+    def test_a_subset_run_over_existing_files_is_refused_and_nothing_is_written(self, tmp_path, tf, select):
+        src, out, f = _universe_lake(tmp_path, tf)
+        before = _snapshot(out)                      # minute: the data file and its sidecar
+        kw = {"watch": _watch(tmp_path, "AAA")} if select == "watch" else {"only": "AAA"}
+        with pytest.raises(SystemExit) as e:
+            ingest.run_ingest(tf, src, out, workers=1, quiet_console=True, layout="market", **kw)
+        msg = str(e.value)
+        assert f"{f.relative_to(out)}: 2 other ticker(s) (BBB, CCC)" in msg and "--replace-with-subset" in msg
+        assert _snapshot(out) == before
+
+    def test_a_minute_file_without_its_sidecar_is_read_for_its_tickers(self, tmp_path):
+        src, out, f = _universe_lake(tmp_path, "minute")
+        f.with_name("16.idx.parquet").unlink()                  # what a crash between the renames leaves
+        with pytest.raises(SystemExit, match=r"2024/01/16\.parquet: 2 other ticker\(s\) \(AAA, CCC\)"):
+            ingest.run_ingest("minute", src, out, workers=1, quiet_console=True, layout="market", only="BBB")
+
+    def test_replace_month_does_not_override_it(self, tmp_path):
+        # --replace-month accepts losing sessions --src lacks; losing tickers needs its own flag
+        src, out, f = _universe_lake(tmp_path, "day")
+        before = f.read_bytes()
+        with pytest.raises(SystemExit, match="replace-with-subset"):
+            ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market",
+                              watch=_watch(tmp_path, "AAA"), replace_month=True)
+        assert f.read_bytes() == before
+
+    @pytest.mark.parametrize("tf", ["day", "minute"])
+    def test_replace_with_subset_rewrites_the_files_with_the_selection_alone(self, tmp_path, tf, capsys):
+        src, out, f = _universe_lake(tmp_path, tf)
+        ingest.run_ingest(tf, src, out, workers=1, quiet_console=True, layout="market",
+                          watch=_watch(tmp_path, "AAA", "CCC"), replace_with_subset=True)
+        assert sorted(pd.read_parquet(f)["ticker"].unique()) == ["AAA", "CCC"]
+        if tf == "minute":
+            assert read_day_index(f)["ticker"].tolist() == ["AAA", "CCC"]
+        assert "rewriting 1 existing market file(s) with the selected tickers alone" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("tf", ["day", "minute"])
+    def test_a_fresh_output_directory_is_written_as_before(self, tmp_path, tf):
+        src, _, f = _universe_lake(tmp_path, tf)
+        out = tmp_path / "subset"
+        ingest.run_ingest(tf, src, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "BBB"))
+        assert pd.read_parquet(out / f.relative_to(tmp_path / "lake"))["ticker"].unique().tolist() == ["BBB"]
+
+    def test_refreshing_a_subset_lake_with_its_own_list_goes_through(self, tmp_path):
+        # nothing outside the selection is in the file, so nothing is lost; a wider list adds tickers
+        src = _day_tree(tmp_path / "full", AUG, ("AAA", "BBB", "CCC"))
+        out = tmp_path / "subset"
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "AAA"))
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "AAA"))
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market",
+                          watch=_watch(tmp_path, "AAA", "BBB"))
+        assert sorted(pd.read_parquet(out / "2025/08.parquet")["ticker"].unique()) == ["AAA", "BBB"]
+        with pytest.raises(SystemExit, match=r"2025/08\.parquet: 1 other ticker\(s\) \(BBB\)"):
+            ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market", only="AAA")
+
+    def test_a_new_period_beside_existing_files_is_written_and_they_are_left_alone(self, tmp_path):
+        src, out, aug = _universe_lake(tmp_path, "day")
+        before = aug.read_bytes()
+        sep = _day_tree(tmp_path / "sep", ["2025-09-02"], ("AAA", "BBB"))
+        ingest.run_ingest("day", sep, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "AAA"))
+        assert aug.read_bytes() == before
+        assert pd.read_parquet(out / "2025/09.parquet")["ticker"].tolist() == ["AAA"]
+
+    def test_ignore_case_is_honored_when_deciding_what_would_be_lost(self, tmp_path):
+        src = _day_tree(tmp_path / "full", AUG, ("AAP", "AAp"))
+        out = tmp_path / "lake"
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market")
+        with pytest.raises(SystemExit, match=r"1 other ticker\(s\) \(AAp\)"):      # AAP selects the common alone
+            ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "AAP"))
+        ingest.run_ingest("day", src, out, workers=1, quiet_console=True, layout="market", watch=_watch(tmp_path, "aap"),
+                          ignore_case=True)
+        assert sorted(pd.read_parquet(out / "2025/08.parquet")["ticker"].unique()) == ["AAP", "AAp"]
