@@ -310,7 +310,7 @@ def _normalize_sm(sm: pd.DataFrame) -> pd.DataFrame:
 RECYCLE_GAP_DAYS = 60
 
 def _segment_id(ticker: str, seg: int) -> str:
-    """Id for a trading segment that predates the current holder of a recycled symbol."""
+    """Id for a trading segment of a recycled symbol that the security master names no holder for."""
     return f"NOFIGI__{ticker}#SEG{int(seg)}"
 
 
@@ -357,16 +357,31 @@ def _recyclable_tickers(sm: pd.DataFrame) -> set:
 
 
 def _recycled_segments(tickers, days, sm: pd.DataFrame, gap_days: int = RECYCLE_GAP_DAYS) -> pd.DataFrame:
-    """Segments that need their own id: every segment except the last, for recyclable tickers only."""
+    """Segments that need their own id, for recyclable tickers only. Pass the master _confirm_ends_by_bars returns.
+
+    Two segments of a split history keep the id _assign_holder_ids gives their rows: the holder's and the
+    symbol's last. Every other segment is `NOFIGI__<T>#SEG<n>`, a company the master does not name.
+
+    Without a confirmed end the holder's segment is the last. With one, it is the last segment that starts on
+    or before the end: RET (Equity Securities Trust II) stops on 2005-02-14, a day before its vendor end, and
+    the symbol prints again from 2008-09-10. Taking the last segment as the holder's put `#SEG0` on the trust's
+    358 bars and `NOFIGI__RET` on the 2008 ones, so its id was on none of its bars. Rows after a confirmed end
+    are 'NOFIGI__<T>' (an unknown later holder), and only the last segment keeps that id. A segment between
+    the holder's and the last is another company and gets its own #SEG id, as does the last segment when
+    the holder's own segment runs past the end (an end from ticker events): that segment's rows after the
+    end already use 'NOFIGI__<T>'.
+    """
+    cols = ["ticker", "seg", "start", "end", "id", "is_last"]
     if gap_days <= 0:
-        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
-    cand = _recyclable_tickers(sm)
+        return pd.DataFrame(columns=cols)
+    smn = _normalize_sm(sm)
+    cand = _recyclable_tickers(smn)
     if not cand:
-        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
+        return pd.DataFrame(columns=cols)
     t = pd.Series(np.asarray(tickers), dtype="object")
     keep = t.isin(cand).to_numpy()
     if not keep.any():
-        return pd.DataFrame(columns=["ticker", "seg", "start", "end", "id", "is_last"])
+        return pd.DataFrame(columns=cols)
     segs = _price_segments(t[keep].to_numpy(), np.asarray(days)[keep], gap_days)
     if segs.empty:
         return segs.assign(id=pd.Series(dtype=object), is_last=pd.Series(dtype=bool))
@@ -375,7 +390,14 @@ def _recycled_segments(tickers, days, sm: pd.DataFrame, gap_days: int = RECYCLE_
     segs = segs[segs.groupby("ticker")["seg"].transform("size") > 1]        # only genuinely split histories
     if segs.empty:
         return segs.assign(id=pd.Series(dtype=object))
-    segs["id"] = pd.Series([None if r.is_last else _segment_id(r.ticker, r.seg) for r in segs.itertuples()],
+    # one row per recyclable ticker (a single holder), so the ticker indexes its end
+    ended = smn[smn["ticker"].isin(cand) & smn["end_confirmed"] & smn["effective_end"].notna()]
+    end = pd.Series(ended.set_index("ticker")["effective_end"].reindex(segs["ticker"]).to_numpy(), index=segs.index)
+    holder = segs["seg"].where(segs["start"] <= end).groupby(segs["ticker"]).transform("max")
+    holder = holder.where(end.notna(), last[segs.index])     # no confirmed end: the last; NaN: all bars after it
+    runs_past = (segs["seg"].eq(holder) & (segs["end"] > end)).groupby(segs["ticker"]).transform("any")
+    own = segs["seg"].eq(holder) | (segs["is_last"] & ~runs_past)
+    segs["id"] = pd.Series([None if o else _segment_id(r.ticker, r.seg) for o, r in zip(own, segs.itertuples())],
                            index=segs.index, dtype=object)
     return segs.reset_index(drop=True)
 
@@ -425,7 +447,7 @@ def _segment_lookup(segs: pd.DataFrame):
 
 
 def _apply_segment_ids(ids: pd.Series, tickers, dates, segs: pd.DataFrame) -> pd.Series:
-    """Override the holder id on rows that fall in a pre-last segment of a recycled ticker."""
+    """Override the holder id on rows that fall in a segment carrying its own id (see _recycled_segments)."""
     if segs is None or segs.empty:
         return ids
     look = _segment_lookup(segs)
@@ -443,7 +465,7 @@ def _apply_segment_ids(ids: pd.Series, tickers, dates, segs: pd.DataFrame) -> pd
         elif dt[i] < starts[j] and j > 0:
             j -= 1                                            # in a gap: belongs to the segment it follows
         v = sid[j]
-        if isinstance(v, str) and v:      # the last segment stores no id: it keeps the real holder
+        if isinstance(v, str) and v:      # a segment with no id keeps the id its rows were given
             out[i] = v
     return pd.Series(out, index=ids.index, dtype=object)
 
@@ -611,8 +633,9 @@ def _attach_id(prx: pd.DataFrame, security_master: pd.DataFrame,
                segments: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """Attach the holder id per price row; never drops rows (out-of-window rows go to the nearest holder).
 
-    `segments` (from `_recycled_segments`) moves bars printed before a recycled symbol's current
-    owner onto their own id, so a 2003 `ARM` bar is not credited to a company that listed in 2023.
+    `segments` (from `_recycled_segments`) moves the bars of a recycled symbol that neither the master's
+    holder nor its last user printed onto their own id, so a 2003 `ARM` bar is not credited to a company
+    that listed in 2023.
     """
     prx = prx.copy()
     prx["ticker"] = _norm_ticker(prx["ticker"])
@@ -1935,9 +1958,11 @@ def main():
                     help="Minute streaming: processes writing day files. Day batch: writer threads, shared out over "
                          "the --workers processes. Set 1 to disable.")
     ap.add_argument("--recycle-gap-days", type=int, default=RECYCLE_GAP_DAYS,
-                    help="Split a ticker's history where it stopped trading this many days or more, and give the "
-                         "earlier segments their own holder id, so a recycled symbol's old bars are not credited "
-                         "to today's company (ARM traded from 2003; Arm Holdings listed in 2023). Applies only to "
+                    help="Split a ticker's history where it stopped trading this many days or more, and give "
+                         "every segment but the holder's and the last its own holder id, so a recycled symbol's "
+                         "old bars are not credited to today's company (ARM traded from 2003; Arm Holdings listed "
+                         "in 2023). The holder's segment is the last, or the last one starting on or before a "
+                         "confirmed end. Applies only to "
                          "tickers whose security-master start is unconfirmed. The same gap after a vendor delisting "
                          "date is what confirms it as an end (CMCSK traded for three years past its vendor date). "
                          "0 disables both.")
