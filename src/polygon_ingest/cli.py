@@ -30,6 +30,7 @@ def bars(
     ignore_case: bool = typer.Option(False, help="Match --watch/--only on letters alone, so AAP also selects AAp, AAPw, ... (different securities; not safe for the ticker layout on a case-folding filesystem)"),
     layout: str = typer.Option("ticker", help="ticker: <out>/<TICKER>/<YYYY>/<MM>/<DD>.parquet (day: <MM>.parquet) | market: <out>/<YYYY>/<MM>/<DD>.parquet with all tickers (whole universe)"),
     replace_month: bool = typer.Option(False, help="Rewrite each day month file from --src even where --src lacks sessions the file already holds (they are dropped), and let rows a flat file stamps into a neighboring month or session replace that file. Without it such a run is refused before anything is written."),
+    replace_with_subset: bool = typer.Option(False, help="With --layout market and --watch/--only, rewrite existing period files with the selected tickers alone (every other ticker in them is dropped). Without it a run that would rewrite a file holding tickers outside the selection is refused before anything is written."),
 ):
     if layout not in ("ticker", "market"):
         raise typer.BadParameter("--layout must be 'ticker' or 'market'")
@@ -38,6 +39,7 @@ def bars(
         workers=workers, chunk=chunk, log_file=log_file, quiet_console=quiet_console,
         write_manifest=write_manifest, manifest_out=manifest_out, manifest_workers=manifest_workers,
         layout=layout, ignore_case=ignore_case, replace_month=replace_month,
+        replace_with_subset=replace_with_subset,
     )
 
 if __name__ == "__main__":

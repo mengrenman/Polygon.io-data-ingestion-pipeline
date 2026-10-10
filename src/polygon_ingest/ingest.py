@@ -380,6 +380,44 @@ def month_coverage_gaps(out_root: Path, csvs: Sequence[str], layout: Layout,
     return gaps
 
 
+def _selection(watch: Optional[set], only: Optional[str], ignore_case: bool) -> Optional[Callable[[str], bool]]:
+    """The tickers a run keeps, as the worker filters them (--only, then --watch); None when it keeps every ticker."""
+    if watch is None and only is None:
+        return None
+    fold = (lambda t: t.upper()) if ignore_case else (lambda t: t)
+    wanted = {fold(t) for t in watch} if watch is not None else None
+    return lambda t: (only is None or fold(t) == fold(only)) and (wanted is None or fold(t) in wanted)
+
+
+def _market_file_tickers(f: Path, tf: Tf) -> set:
+    """Tickers in a market-layout file: a minute file's sidecar when it describes the file, else the ticker column."""
+    if tf == "minute":
+        try:
+            from .lake_io import read_day_index
+        except ImportError:   # lake_io imports this module, so not at the top
+            from lake_io import read_day_index
+        idx = read_day_index(f)
+        if idx is not None:
+            return set(idx["ticker"])
+    return set(pc.unique(pq.read_table(f, columns=["ticker"]).column("ticker")).to_pylist())
+
+
+def market_subset_losses(out_root: Path, periods: Sequence[tuple], tf: Tf, keeps: Callable[[str], bool],
+                         threads: int = 8) -> Dict[Path, Tuple[int, List[str]]]:
+    """Tickers a --watch / --only run would strip from a market lake. A market file holds every ticker of its month
+    (day) or session (minute), and the worker replaces it whole with the rows of the tickers `keeps` selects, so
+    `poly bars --layout market --watch list.json --out lake/day/all` would leave each month it touches holding the
+    list alone. Returns, for each existing file of `periods` ((yr, mo) day, (yr, mo, dd) minute) that holds tickers
+    outside the selection, how many there are and the first few. Rows without a ticker are dropped on ingest anyway."""
+    files = sorted(p for p in (_bucket_path(out_root, k, tf, "market") for k in set(periods)) if p.is_file())
+
+    def one(f: Path):
+        lost = sorted(t for t in _market_file_tickers(f, tf) if t and str(t).strip() and not keeps(t))
+        return f, (len(lost), lost[:5])
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
+        return {f: lost for f, lost in ex.map(one, files) if lost[0]}
+
+
 # ── worker (minute/day via tf switch) ─────────────────────────────────────────
 def worker(
     csv_list: Sequence[str],
@@ -700,10 +738,12 @@ def run_ingest(
     layout: Layout = "ticker",
     ignore_case: bool = False,
     replace_month: bool = False,
+    replace_with_subset: bool = False,
 ):
     """Ingest every flat file under `src_root` into `out_root`. Each output file is replaced whole, so a run is
     refused (before anything is written) when a day month file holds sessions --src lacks, unless
-    `replace_month`; see month_coverage_gaps and _uncovered."""
+    `replace_month`, and when a --watch / --only run would rewrite a market-layout file holding tickers outside the
+    selection, unless `replace_with_subset`; see month_coverage_gaps, market_subset_losses and _uncovered."""
     import multiprocessing as mp
 
     out_root.mkdir(parents=True, exist_ok=True)
@@ -776,36 +816,56 @@ def run_ingest(
     total_files = sum(len(lst) for lst in owned_csvs)
     LOG(f"[INFO] Total files scheduled for processing: {total_files}", critical=True)
 
+    # Pre-flight: every output file is replaced whole, so each check below runs before any worker starts and a
+    # refused run leaves the lake as it was.
+    def refuse(msg: str):
+        LOG(msg, critical=True)
+        log_stop.set(); log_thread.join()
+        raise SystemExit(msg)
+
+    keeps = _selection(watch_set, only, ignore_case)
+    # periods --src holds a flat file for
+    if tf == "day":
+        src_periods = frozenset(parse_year_month_from_path(Path(c)) for c in all_csvs if c not in skipped)
+    else:
+        src_periods = frozenset((d.year, d.month, d.day) for c in all_csvs if (d := file_session(Path(c))) is not None)
+
+    # A market file holds every ticker of its period and is rewritten from the selected tickers' rows alone, so a
+    # --watch / --only run must not touch a file holding any other ticker. A ticker-layout run writes only the
+    # selected symbols' directories. --replace-month does not cover this: it accepts losing sessions, not tickers.
+    if layout == "market" and keeps is not None:
+        losses = market_subset_losses(out_root, src_periods, tf, keeps)
+        if losses and not replace_with_subset:
+            sel = " and ".join(([f"--watch {watch} ({len(watch_set)} symbol(s))"] if watch_set is not None else [])
+                               + ([f"--only {only}"] if only is not None else []))
+            lines = [f"        {f.relative_to(out_root)}: {n:,} other ticker(s) ({', '.join(ex)}{', ...' if n > len(ex) else ''})"
+                     for f, (n, ex) in sorted(losses.items())[:12]]
+            if len(losses) > 12:
+                lines.append(f"        ... and {len(losses) - 12} more file(s)")
+            refuse(f"[ERROR] {sel} keeps only the selected tickers, and a market-layout file holds every ticker of its "
+                   f"{'month' if tf == 'day' else 'session'} and is rewritten whole, so these {len(losses)} existing "
+                   f"file(s) under {out_root} would lose every other ticker:\n" + "\n".join(lines) +
+                   "\n        Write the subset to its own --out (or use --layout ticker), drop --watch/--only to rebuild "
+                   "those files for every ticker, or pass --replace-with-subset to rewrite them with the selection alone.")
+        if losses:
+            LOG(f"[warn] --replace-with-subset: rewriting {len(losses)} existing market file(s) with the selected "
+                f"tickers alone; every other ticker in them is dropped", critical=True)
+
     # A day month file is rewritten from what --src holds for that month, so --src must hold every session the
-    # file already has. Checked before any worker starts, so a refused run leaves the lake as it was.
+    # file already has.
     if tf == "day" and not replace_month:
-        if layout == "ticker" and only is not None:
-            rewrites = (lambda t: t.upper() == only.upper()) if ignore_case else (lambda t: t == only)
-        elif layout == "ticker" and watch_set is not None:
-            wu = {t.upper() for t in watch_set}
-            rewrites = (lambda t: t.upper() in wu) if ignore_case else (lambda t: t in watch_set)
-        else:
-            rewrites = None
-        gaps = month_coverage_gaps(out_root, all_csvs, layout, rewrites)
+        gaps = month_coverage_gaps(out_root, all_csvs, layout, keeps)
         if gaps:
             lines = [f"        {y:04d}-{m:02d}: {len(v)} session(s) missing from --src "
                      f"({v[0]}{' .. ' + str(v[-1]) if len(v) > 1 else ''})" for (y, m), v in sorted(gaps.items())[:12]]
             if len(gaps) > 12:
                 lines.append(f"        ... and {len(gaps) - 12} more month(s)")
-            msg = (f"[ERROR] {len(gaps)} month file(s) under {out_root} hold sessions --src has no flat file for, and "
+            refuse(f"[ERROR] {len(gaps)} month file(s) under {out_root} hold sessions --src has no flat file for, and "
                    f"the ingester rewrites a month whole from --src, so they would be lost:\n" + "\n".join(lines) +
                    "\n        Put every flat file of those months under --src, or pass --replace-month to rewrite "
                    "them from --src alone.")
-            LOG(msg, critical=True)
-            log_stop.set(); log_thread.join()
-            raise SystemExit(msg)
-    # periods --src holds a flat file for: a bucket outside them may create a file but never replace one
-    if replace_month:
-        covered = None
-    elif tf == "day":
-        covered = frozenset(parse_year_month_from_path(Path(c)) for c in all_csvs if c not in skipped)
-    else:
-        covered = frozenset((d.year, d.month, d.day) for c in all_csvs if (d := file_session(Path(c))) is not None)
+    # a bucket outside the periods --src covers may create a file but never replace one
+    covered = None if replace_month else src_periods
 
     # Multiprocessing context
     try:
@@ -912,6 +972,10 @@ if __name__ == "__main__":
                     help="Rewrite each day month file from --src even where --src lacks sessions the file already "
                          "holds (they are dropped), and let rows a flat file stamps into a neighboring month or "
                          "session replace that file. Without it such a run is refused before anything is written.")
+    ap.add_argument("--replace-with-subset", action="store_true",
+                    help="With --layout market and --watch/--only, rewrite existing period files with the selected "
+                         "tickers alone (every other ticker in them is dropped). Without it a run that would rewrite "
+                         "a file holding tickers outside the selection is refused before anything is written.")
     ap.add_argument("--workers", type=int, default=os.cpu_count()//2 or 1, help="parallel workers")
     ap.add_argument("--chunk", type=int, default=CHUNK_DEFAULT, help="rows per pandas.read_csv chunk")
     # Manifest options
@@ -937,4 +1001,5 @@ if __name__ == "__main__":
         manifest_out=args.manifest_out,
         manifest_workers=args.manifest_workers, layout=args.layout,
         ignore_case=args.ignore_case, replace_month=args.replace_month,
+        replace_with_subset=args.replace_with_subset,
     )
